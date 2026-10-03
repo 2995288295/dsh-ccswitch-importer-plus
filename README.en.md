@@ -101,6 +101,13 @@ Relative to [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-
 - `node:sqlite` is loaded lazily, so an unsupported Node version produces a readable message instead of a load failure.
 - All UI strings go through the zh/en message catalogue instead of hard-coded Chinese.
 
+**`0.2.0-rc.3` UI usability fixes**
+
+- Blocked rows now say why: the host attaches a machine-readable `blockedCode` to every blocked reason (unknown values fall back to `blocked`), the panel localises it from the zh/en catalogue, and the variable part (app type, npm adapter) travels as `blockedDetail`.
+- The refresh that follows an import no longer wipes the import report; rows show the provider name instead of the internal id, failures are marked in the error colour, and a "clear" action was added.
+- The empty-state flash ("no CCSwitch provider found") is gone on first paint, and "scanning" and "importing" no longer share one button label.
+- Reasoning panel: editing after a save flips the badge to "unsaved changes" instead of still claiming "saved"; the save button is disabled when the draft is unchanged, so it cannot burn a pointless settings write; "reload" asks before discarding local edits; and the level summary shows a "N custom" marker so a collapsed row still reveals customised wire values.
+
 The upstream copyright and license are kept unmodified in `LICENSE`; changed files carry a notice header and `NOTICE` records the modifications.
 
 ## Development and Verification

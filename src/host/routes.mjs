@@ -6,7 +6,7 @@ import { discoverSources, scanSource, defaultSourcePath, SCAN_REASON } from '../
 import { classifyProfiles } from '../../lib/core/mapper.js'
 import { importProfiles as runImport } from '../../lib/core/importer.js'
 import { probeModels } from '../../lib/core/probe.js'
-import { redactText } from '../../lib/core/safety.js'
+import { redactText, BLOCKED, BLOCKED_CODES } from '../../lib/core/safety.js'
 
 export const API_BASE = '/api/dsh-ccswitch'
 const MAX_JSON_BODY_BYTES = 64 * 1024
@@ -83,7 +83,15 @@ function publicSummary(summary) {
     reasoningEffort: SAFE_REASONING.has(summary.reasoningEffort) ? summary.reasoningEffort : undefined,
     status: SAFE_STATUSES.has(summary.status) ? summary.status : 'blocked',
     warnings: publicWarnings(summary.warnings),
+    // Kept for wire compatibility with consumers that only look for a flag.
     blockedReason: summary.blockedReason ? 'source profile is blocked' : undefined,
+    // The browser labels the row from the code, not from the Chinese prose the
+    // core builds for the log: one row per blocked profile, eight possible
+    // reasons. `blockedDetail` carries the variable part (app type, npm name).
+    blockedCode: BLOCKED_CODES.has(summary.blockedCode)
+      ? summary.blockedCode
+      : (summary.blockedReason ? BLOCKED.UNKNOWN : undefined),
+    blockedDetail: publicText(summary.blockedDetail),
   }
 }
 
@@ -97,7 +105,11 @@ function publicResult(result, secrets = []) {
     warnings: publicWarnings(result?.warnings),
   }
   if (status === 'failed') output.error = publicErrorDetail(result?.error, secrets)
-  if (status === 'blocked') output.error = 'profile blocked'
+  if (status === 'blocked') {
+    output.error = 'profile blocked'
+    output.blockedCode = BLOCKED_CODES.has(result?.blockedCode) ? result.blockedCode : BLOCKED.UNKNOWN
+    output.blockedDetail = publicText(result?.blockedDetail)
+  }
   if (status === 'skipped') output.skipReason = 'profile was not selected or is not importable'
   return output
 }

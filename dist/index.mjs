@@ -269,7 +269,11 @@ function redactSummary(profile, key, status, extraWarnings = []) {
     reasoningEffort: normalizeImportedEffort(profile.modelReasoningEffort),
     status,
     warnings: profileWarnings(profile, extraWarnings),
-    blockedReason: profile.blocked ? profile.blockedReason : void 0
+    blockedReason: profile.blocked ? profile.blockedReason : void 0,
+    // The code/detail pair travels next to the Host-facing prose so the browser
+    // can label the row in its own locale without parsing Chinese.
+    blockedCode: profile.blocked ? profile.blockedCode : void 0,
+    blockedDetail: profile.blocked ? profile.blockedDetail : void 0
   };
 }
 function resolveProviderKey(profile, existingProviders) {
@@ -353,6 +357,22 @@ var IMPORT_FAILURE = {
   CONFLICT: "settings-conflict",
   ROLLBACK: "credential-rollback-failed"
 };
+var BLOCKED = {
+  INVALID_SETTINGS_JSON: "invalid-settings-json",
+  UNSUPPORTED_APP_TYPE: "unsupported-app-type",
+  MISSING_OPENAI_KEY: "missing-openai-key",
+  MISSING_CODEX_PROVIDER: "missing-codex-provider",
+  MISSING_ANTHROPIC_KEY: "missing-anthropic-key",
+  MISSING_ANTHROPIC_BASE_URL: "missing-anthropic-base-url",
+  MISSING_OPENCODE_KEY: "missing-opencode-key",
+  MISSING_OPENCODE_BASE_URL: "missing-opencode-base-url",
+  UNSUPPORTED_OPENCODE_ADAPTER: "unsupported-opencode-adapter",
+  /** Two selected rows resolve to the same provider key in one batch. */
+  DUPLICATE_PROVIDER_KEY: "duplicate-provider-key",
+  /** Fallback for a row that is blocked for a reason this build does not know. */
+  UNKNOWN: "blocked"
+};
+var BLOCKED_CODES = new Set(Object.values(BLOCKED));
 function redactText(value, secrets = []) {
   let text = value instanceof Error ? value.message : String(value?.message ?? value ?? "");
   for (const secret of secrets) {
@@ -380,13 +400,28 @@ async function importProfiles({ profiles, selectedIds, settings, credentials, ex
       continue;
     }
     if (profile.blocked) {
-      results.push({ profileId: profile.profileId, profileName: profile.profileName, status: "blocked", error: profile.blockedReason });
+      results.push({
+        profileId: profile.profileId,
+        profileName: profile.profileName,
+        status: "blocked",
+        error: profile.blockedReason,
+        blockedCode: profile.blockedCode ?? BLOCKED.UNKNOWN,
+        blockedDetail: profile.blockedDetail
+      });
       continue;
     }
     const { key, warnings } = resolveProviderKey(profile, existing);
     const ref = credentialRefForProviderKey(key);
     if (usedKeys.has(key)) {
-      results.push({ profileId: profile.profileId, profileName: profile.profileName, status: "blocked", error: `provider \u952E ${key} \u91CD\u590D`, warnings });
+      results.push({
+        profileId: profile.profileId,
+        profileName: profile.profileName,
+        status: "blocked",
+        error: `provider \u952E ${key} \u91CD\u590D`,
+        blockedCode: BLOCKED.DUPLICATE_PROVIDER_KEY,
+        blockedDetail: key,
+        warnings
+      });
       continue;
     }
     usedKeys.add(key);
@@ -590,6 +625,8 @@ function extractProfile(row) {
     isCurrent: Boolean(row.is_current),
     blocked: false,
     blockedReason: "",
+    blockedCode: void 0,
+    blockedDetail: void 0,
     warnings: [],
     unsupported: [],
     apiKey: void 0,
@@ -602,18 +639,18 @@ function extractProfile(row) {
   try {
     parsed = JSON.parse(String(row.settings_config ?? "{}"));
   } catch {
-    return { ...base, blocked: true, blockedReason: "settings_config \u4E0D\u662F\u5408\u6CD5 JSON" };
+    return { ...base, blocked: true, blockedReason: "settings_config \u4E0D\u662F\u5408\u6CD5 JSON", blockedCode: BLOCKED.INVALID_SETTINGS_JSON };
   }
   if (appType === "codex") return extractCodex(base, parsed);
   if (appType === "claude" || appType === "claude-desktop") return extractClaude(base, parsed);
   if (appType === "opencode") return extractOpencode(base, parsed);
-  return { ...base, blocked: true, blockedReason: `\u4E0D\u652F\u6301\u7684 app_type\uFF1A${appType}` };
+  return { ...base, blocked: true, blockedReason: `\u4E0D\u652F\u6301\u7684 app_type\uFF1A${appType}`, blockedCode: BLOCKED.UNSUPPORTED_APP_TYPE, blockedDetail: appType };
 }
 function extractCodex(base, parsed) {
   const auth = (parsed && typeof parsed === "object" ? parsed.auth : void 0) ?? {};
   const apiKey = typeof auth.OPENAI_API_KEY === "string" && auth.OPENAI_API_KEY.length > 0 ? auth.OPENAI_API_KEY : void 0;
   if (apiKey === void 0) {
-    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08auth.OPENAI_API_KEY \u7F3A\u5931\uFF09" };
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08auth.OPENAI_API_KEY \u7F3A\u5931\uFF09", blockedCode: BLOCKED.MISSING_OPENAI_KEY };
   }
   const configText = typeof parsed.config === "string" ? parsed.config : "";
   const toml = parseCodexToml(configText);
@@ -621,7 +658,7 @@ function extractCodex(base, parsed) {
   const provider = toml.provider;
   let model = toml.model;
   if (!provider || typeof provider.baseUrl !== "string" || provider.baseUrl === "") {
-    return { ...base, blocked: true, blockedReason: "config \u4E2D\u7F3A\u5C11\u53EF\u7528\u7684 [model_providers.custom] \u6BB5" };
+    return { ...base, blocked: true, blockedReason: "config \u4E2D\u7F3A\u5C11\u53EF\u7528\u7684 [model_providers.custom] \u6BB5", blockedCode: BLOCKED.MISSING_CODEX_PROVIDER };
   }
   const warnings = [];
   if (provider.requiresOpenaiAuth === true) {
@@ -651,11 +688,11 @@ function extractClaude(base, parsed) {
   const env = (parsed && typeof parsed === "object" ? parsed.env : void 0) ?? {};
   const apiKey = [env.ANTHROPIC_AUTH_TOKEN, env.ANTHROPIC_API_KEY].find((value) => typeof value === "string" && value.length > 0);
   if (apiKey === void 0) {
-    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY \u7F3A\u5931\uFF09" };
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY \u7F3A\u5931\uFF09", blockedCode: BLOCKED.MISSING_ANTHROPIC_KEY };
   }
   const baseURL = typeof env.ANTHROPIC_BASE_URL === "string" && env.ANTHROPIC_BASE_URL.length > 0 ? env.ANTHROPIC_BASE_URL : void 0;
   if (baseURL === void 0) {
-    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08env.ANTHROPIC_BASE_URL \u7F3A\u5931\uFF09" };
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08env.ANTHROPIC_BASE_URL \u7F3A\u5931\uFF09", blockedCode: BLOCKED.MISSING_ANTHROPIC_BASE_URL };
   }
   const warnings = [];
   let model = typeof env.ANTHROPIC_MODEL === "string" && env.ANTHROPIC_MODEL.length > 0 ? env.ANTHROPIC_MODEL : DEFAULT_CLAUDE_MODEL;
@@ -680,15 +717,15 @@ function extractOpencode(base, parsed) {
   const options = (parsed && typeof parsed === "object" ? parsed.options : void 0) ?? {};
   const apiKey = typeof options.apiKey === "string" && options.apiKey.length > 0 ? options.apiKey : void 0;
   if (apiKey === void 0) {
-    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08options.apiKey \u7F3A\u5931\uFF09" };
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08options.apiKey \u7F3A\u5931\uFF09", blockedCode: BLOCKED.MISSING_OPENCODE_KEY };
   }
   const baseURL = typeof options.baseURL === "string" && options.baseURL.length > 0 ? options.baseURL : void 0;
   if (baseURL === void 0) {
-    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08options.baseURL \u7F3A\u5931\uFF09" };
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08options.baseURL \u7F3A\u5931\uFF09", blockedCode: BLOCKED.MISSING_OPENCODE_BASE_URL };
   }
   const npm = typeof parsed.npm === "string" ? parsed.npm : "";
   if (npm !== "@ai-sdk/openai-compatible") {
-    return { ...base, blocked: true, blockedReason: `\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A${npm || "\u672A\u77E5"}\uFF08\u4EC5 @ai-sdk/openai-compatible\uFF09` };
+    return { ...base, blocked: true, blockedReason: `\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A${npm || "\u672A\u77E5"}\uFF08\u4EC5 @ai-sdk/openai-compatible\uFF09`, blockedCode: BLOCKED.UNSUPPORTED_OPENCODE_ADAPTER, blockedDetail: npm || "unknown" };
   }
   const warnings = [];
   const rawModels = (parsed && typeof parsed === "object" ? parsed.models : void 0) ?? {};
@@ -910,7 +947,13 @@ function publicSummary(summary) {
     reasoningEffort: SAFE_REASONING.has(summary.reasoningEffort) ? summary.reasoningEffort : void 0,
     status: SAFE_STATUSES.has(summary.status) ? summary.status : "blocked",
     warnings: publicWarnings(summary.warnings),
-    blockedReason: summary.blockedReason ? "source profile is blocked" : void 0
+    // Kept for wire compatibility with consumers that only look for a flag.
+    blockedReason: summary.blockedReason ? "source profile is blocked" : void 0,
+    // The browser labels the row from the code, not from the Chinese prose the
+    // core builds for the log: one row per blocked profile, eight possible
+    // reasons. `blockedDetail` carries the variable part (app type, npm name).
+    blockedCode: BLOCKED_CODES.has(summary.blockedCode) ? summary.blockedCode : summary.blockedReason ? BLOCKED.UNKNOWN : void 0,
+    blockedDetail: publicText(summary.blockedDetail)
   };
 }
 function publicResult(result, secrets = []) {
@@ -923,7 +966,11 @@ function publicResult(result, secrets = []) {
     warnings: publicWarnings(result?.warnings)
   };
   if (status === "failed") output.error = publicErrorDetail(result?.error, secrets);
-  if (status === "blocked") output.error = "profile blocked";
+  if (status === "blocked") {
+    output.error = "profile blocked";
+    output.blockedCode = BLOCKED_CODES.has(result?.blockedCode) ? result.blockedCode : BLOCKED.UNKNOWN;
+    output.blockedDetail = publicText(result?.blockedDetail);
+  }
   if (status === "skipped") output.skipReason = "profile was not selected or is not importable";
   return output;
 }

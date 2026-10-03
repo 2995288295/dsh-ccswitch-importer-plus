@@ -22,7 +22,14 @@ export function apply(ctx) {
   const controller = createReasoningSettingsController(ctx.remote);
   const importer = createCCSwitchImportController({
     getRevision: () => controller.getSnapshot().revision,
-    onImported: () => controller.refresh(),
+    // The reasoning panel mirrors the settings document the import just wrote,
+    // so it has to refresh — and so does the source scan, otherwise the rows
+    // that were imported keep their "ready to import" badge. `keepResults`
+    // preserves the report `importSelected` published a moment ago.
+    onImported: async () => {
+      controller.refresh();
+      await importer.scan({ keepResults: true });
+    },
   });
   const t = ctx.locale.bind("dsh-ccswitch-importer-plus");
   const removeStyles = installEmbedStyles();

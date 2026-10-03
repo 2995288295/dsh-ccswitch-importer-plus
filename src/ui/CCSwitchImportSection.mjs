@@ -14,9 +14,11 @@ function isSelectable(profile) {
 
 function statusKey(status) {
   if (status === 'new') return 'importer.status.new';
-  if (status === 'update') return 'importer.status.update';
+  if (status === 'update' || status === 'updated') return 'importer.status.update';
   if (status === 'unchanged') return 'importer.status.unchanged';
   if (status === 'blocked') return 'importer.status.blocked';
+  if (status === 'failed') return 'importer.status.failed';
+  if (status === 'skipped') return 'importer.status.skipped';
   return undefined;
 }
 
@@ -25,9 +27,39 @@ function statusLabel(status, tr) {
   return key ? tr(key, status) : (status ?? '');
 }
 
+const SAFE_BADGES = new Set(['new', 'update', 'updated', 'unchanged', 'blocked', 'failed', 'skipped']);
+
 function badgeClass(status) {
-  const safe = status === 'new' || status === 'update' || status === 'unchanged' || status === 'blocked' ? status : 'unchanged';
+  const safe = SAFE_BADGES.has(status) ? status : 'unchanged';
   return `dsh-ccswitch-import__badge dsh-ccswitch-import__badge--${safe}`;
+}
+
+/**
+ * The Host reports why a row is blocked as a stable code (`blockedCode`) plus a
+ * variable detail. Keeping the Chinese strings here as fallbacks means the row
+ * still explains itself when the Host translator is unavailable, and the codes
+ * stay the single source of truth for which reason is which.
+ */
+const BLOCKED_FALLBACK = {
+  'invalid-settings-json': '设置内容不是合法 JSON',
+  'unsupported-app-type': '不支持的 app 类型：{detail}',
+  'missing-openai-key': '缺少 API key（auth.OPENAI_API_KEY）',
+  'missing-codex-provider': 'config 里没有可用的 [model_providers.custom] 段',
+  'missing-anthropic-key': '缺少 API key（env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY）',
+  'missing-anthropic-base-url': '缺少 base URL（env.ANTHROPIC_BASE_URL）',
+  'missing-opencode-key': '缺少 API key（options.apiKey）',
+  'missing-opencode-base-url': '缺少 base URL（options.baseURL）',
+  'unsupported-opencode-adapter': '暂不支持的 opencode 适配器：{detail}',
+  'duplicate-provider-key': '本批里 provider 键重复：{detail}',
+  'blocked': '该配置无法导入',
+};
+
+function blockedLabel(source, tr) {
+  const code = typeof source?.blockedCode === 'string' && BLOCKED_FALLBACK[source.blockedCode]
+    ? source.blockedCode
+    : 'blocked';
+  const detail = typeof source?.blockedDetail === 'string' ? source.blockedDetail : '';
+  return tr(`importer.blocked.${code}`, BLOCKED_FALLBACK[code], { detail });
 }
 
 /**
@@ -52,6 +84,16 @@ function emptyMessage(snapshot, tr) {
   return tr('importer.empty', '没有可读取的 CCSwitch provider。');
 }
 
+/** Second line of an import-result row; empty when the status says it all. */
+function resultDetail(result, tr) {
+  if (result.status === 'failed') {
+    return result.error ? tr('importer.resultError', '错误：{message}', { message: result.error }) : '';
+  }
+  if (result.status === 'blocked') return blockedLabel(result, tr);
+  if (result.status === 'skipped') return tr('importer.resultSkipped', '未选择，或该配置不可导入');
+  return '';
+}
+
 export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) {
   const tr = makeTranslator(t);
   if (!controller) return null;
@@ -59,7 +101,14 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
   useEffect(() => {
     if (snapshot.phase === 'idle') void controller.scan().catch(() => {});
   }, [controller, snapshot.phase]);
-  const busy = snapshot.phase === "loading" || snapshot.phase === "importing";
+  const scanning = snapshot.phase === "loading";
+  const importing = snapshot.phase === "importing";
+  const busy = scanning || importing;
+  // The first frame is `idle` with no rows yet. Treating that as "nothing to
+  // import" made the panel claim there are no providers for one frame, before
+  // the effect had a chance to scan, so the empty state now waits for a scan
+  // that has actually finished.
+  const awaitingFirstScan = snapshot.phase === "idle" || scanning;
   const selected = new Set(snapshot.selectedIds);
   const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
   const importableIds = profiles.filter(isSelectable).map((profile) => profile.profileId);
@@ -92,15 +141,19 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
           onClick: toggleCollapsed,
         }, h("span", { "aria-hidden": "true" }, collapsed ? "⌄" : "⌃")),
         !collapsed && h("div", { className: "dsh-ccswitch-import__actions" },
-          h("button", { className: "dsh-ccswitch-import__secondary", type: "button", disabled: busy, onClick: () => { void controller.scan().catch(() => {}); } }, busy ? tr('importer.scanning', '处理中…') : tr('importer.scan', '扫描')),
-          h("button", { className: "dsh-ccswitch-import__primary", type: "button", disabled: busy || selected.size === 0, onClick: () => { void controller.importSelected().catch(() => {}); } }, tr('importer.importSelected', '导入选中')),
+          h("button", { className: "dsh-ccswitch-import__secondary", type: "button", disabled: busy, onClick: () => { void controller.scan().catch(() => {}); } },
+            scanning ? tr('importer.scanning', '处理中…') : tr('importer.scan', '扫描')),
+          h("button", { className: "dsh-ccswitch-import__primary", type: "button", disabled: busy || selected.size === 0, onClick: () => { void controller.importSelected().catch(() => {}); } },
+            importing ? tr('importer.importing', '导入中…') : tr('importer.importSelected', '导入选中')),
         ),
       ),
     ),
     h("div", { id: "dsh-ccswitch-import-body", className: "dsh-ccswitch-import__body", hidden: collapsed },
       snapshot.error && h("p", { role: "alert", className: "dsh-ccswitch-import__error" }, snapshot.error),
-      profiles.length === 0 && snapshot.phase !== "loading"
-        ? h("p", { className: "dsh-ccswitch-import__empty" }, emptyMessage(snapshot, tr))
+      profiles.length === 0
+        ? (awaitingFirstScan
+          ? h("p", { className: "dsh-ccswitch-import__empty" }, tr('importer.loading', '正在读取 CCSwitch 配置…'))
+          : h("p", { className: "dsh-ccswitch-import__empty" }, emptyMessage(snapshot, tr)))
         : h("div", { className: "dsh-ccswitch-import__list" },
           h("label", { className: "dsh-ccswitch-import__row dsh-ccswitch-import__row--select-all" },
             h("input", {
@@ -137,6 +190,11 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
                 h("span", { className: "dsh-ccswitch-import__meta-line" },
                   h("code", { className: "dsh-ccswitch-import__provider-key" }, profile.providerKey || tr('importer.pendingKey', '待生成 provider key')),
                   h("span", null, `${profile.credential === "found" ? tr('importer.credentialFound', '凭据已找到') : tr('importer.credentialMissing', '缺少凭据')} · ${(profile.modelIds ?? []).join(", ") || tr('importer.noModels', '无模型')}`),
+                  // A blocked row used to show only "blocked" with no reason:
+                  // the Host had already worked out exactly what was wrong.
+                  profile.status === 'blocked'
+                    ? h("span", { className: "dsh-ccswitch-import__blocked-reason" }, blockedLabel(profile, tr))
+                    : null,
                   Array.isArray(profile.warnings) && profile.warnings.length > 0
                     ? h("span", { className: "dsh-ccswitch-import__warnings" }, profile.warnings.join("；"))
                     : null,
@@ -146,10 +204,24 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
             );
           }),
         ),
-      snapshot.results.length > 0 && h("ul", { className: "dsh-ccswitch-import__results" },
-        ...snapshot.results.map((result) => h("li", { key: `${result.profileId}-${result.status}` },
-          `${result.profileId}: ${result.status === "failed" ? result.error : statusLabel(result.status, tr)}`
-        )),
+      snapshot.results.length > 0 && h("div", { className: "dsh-ccswitch-import__report" },
+        h("div", { className: "dsh-ccswitch-import__report-head" },
+          h("strong", null, tr('importer.resultsTitle', '导入结果')),
+          h("button", { type: "button", className: "dsh-ccswitch-import__link", onClick: () => controller.clearResults() }, tr('importer.resultsClear', '清除')),
+        ),
+        h("ul", { className: "dsh-ccswitch-import__results" },
+          ...snapshot.results.map((result, index) => {
+            const detail = resultDetail(result, tr);
+            return h("li", {
+              key: `${result.profileId ?? 'row'}-${result.status ?? 'unknown'}-${index}`,
+              className: "dsh-ccswitch-import__result" + (result.status === 'failed' ? " dsh-ccswitch-import__result--failed" : ""),
+            },
+              h("span", { className: badgeClass(result.status) }, statusLabel(result.status, tr)),
+              h("strong", null, result.profileName || result.profileId || ''),
+              detail ? h("span", { className: "dsh-ccswitch-import__result-detail" }, detail) : null,
+            );
+          }),
+        ),
       ),
     ),
   );

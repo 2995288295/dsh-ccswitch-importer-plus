@@ -18,10 +18,14 @@ const h = React.createElement;
  */
 const STATUS_SAVED_DIRTY = "saved-dirty";
 
+/** The draft has diverged from the last document the user saw saved. */
+const STATUS_DIRTY = "dirty";
+
 function displayStatus(status, tr, rawError) {
   if (status === "saving") return tr("reasoning.saving", "保存中…");
   if (status === "saved") return tr("reasoning.saved", "已保存");
   if (status === STATUS_SAVED_DIRTY) return tr("reasoning.savedDirty", "已保存，但仍有未保存的改动");
+  if (status === STATUS_DIRTY) return tr("reasoning.unsaved", "有未保存的改动");
   if (!status) return "";
   return tr("reasoning.saveFailed", "保存失败：{message}", { message: rawError ?? status });
 }
@@ -88,7 +92,17 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
     });
   };
 
+  // Same notion of "changed" the save path uses, so the badge, the save
+  // button and the reload guard all agree.
+  const dirty = draftSignature(draft) !== draftSignature(baseline);
+
   const reload = () => {
+    // Reload replaces the draft with the remote document, so unsaved edits
+    // would vanish without a trace. Ask first when there is something to lose.
+    if (dirty && typeof globalThis.confirm === "function"
+      && !globalThis.confirm(tr("reasoning.reloadDirty", "丢弃本地改动并重新载入"))) {
+      return;
+    }
     const remoteSnapshot = controller.getSnapshot();
     const remoteModel = remoteSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
     applyReconciledState(reloadDraft({ remoteModel, remoteRevision: remoteSnapshot.revision }));
@@ -124,14 +138,23 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
 
   const modelName = model.name || model.id;
   const selectedCount = Object.keys(draft.efforts).length;
+  // Levels whose wire value differs from the level name (the default), so a
+  // collapsed row still shows that a mapping was customised.
+  const customCount = Object.entries(draft.efforts).filter(([level, value]) => {
+    const normalized = value === "" || value === undefined ? null : value;
+    return normalized !== (level === "off" ? null : level);
+  }).length;
   const customBodyId = ("dsh-reasoning-custom-" + route + "-" + model.id).replace(/[^a-zA-Z0-9_-]/g, "-");
-  const statusClass = status === "saving"
+  // A save result describes the document only until the user edits again: the
+  // badge used to keep reporting "Saved" while the draft had already diverged.
+  const effectiveStatus = dirty && (status === "saved" || status === "") ? STATUS_DIRTY : status;
+  const statusClass = effectiveStatus === "saving"
     ? "dsh-reasoning-status dsh-reasoning-status--saving"
-    : status === "saved"
+    : effectiveStatus === "saved"
       ? "dsh-reasoning-status dsh-reasoning-status--success"
-      : status === STATUS_SAVED_DIRTY
+      : effectiveStatus === STATUS_SAVED_DIRTY || effectiveStatus === STATUS_DIRTY
         ? "dsh-reasoning-status dsh-reasoning-status--dirty"
-        : status
+        : effectiveStatus
           ? "dsh-reasoning-status dsh-reasoning-status--error"
           : "dsh-reasoning-status";
   return h("article", { className: "dsh-reasoning-model" + (collapsed ? " dsh-reasoning-model--collapsed" : "") },
@@ -176,6 +199,9 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
         h("div", { className: "dsh-reasoning-levels__heading" },
           h("span", { className: "dsh-reasoning-levels__label" }, tr("reasoning.levelsHeading", "可用等级")),
           h("span", { className: "dsh-reasoning-levels__summary" }, tr("reasoning.levelsSelected", "已选 {count} 项", { count: selectedCount })),
+          customCount > 0
+            ? h("span", { className: "dsh-reasoning-levels__custom" }, tr("reasoning.customMarker", "已自定义 {count} 项", { count: customCount }))
+            : null,
         ),
         h("div", { className: "dsh-reasoning-levels__options" },
           ...LEVELS.map((level) => {
@@ -218,9 +244,16 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
     ),
     !collapsed && h("footer", { className: "dsh-reasoning-model__footer" },
       h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? tr("reasoning.remoteUpdated", "远端已更新") : ""),
-      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, tr("reasoning.reload", "重新载入")),
-      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status, tr, saveError)),
-      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? tr("reasoning.saving", "保存中…") : tr("reasoning.save", "保存")),
+      remoteChanged && h("button", {
+        className: "dsh-reasoning-reload",
+        type: "button",
+        title: dirty ? tr("reasoning.reloadDirty", "丢弃本地改动并重新载入") : undefined,
+        onClick: reload,
+      }, tr("reasoning.reload", "重新载入")),
+      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(effectiveStatus, tr, saveError)),
+      // Saving an unchanged draft costs a settings.write and a full describe()
+      // round trip without changing anything, so the button tracks the draft.
+      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving" || !dirty, onClick: save }, status === "saving" ? tr("reasoning.saving", "保存中…") : tr("reasoning.save", "保存")),
     ),
   );
 }

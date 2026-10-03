@@ -67,8 +67,23 @@ export function createCCSwitchImportController({
       if (allSelected) controller.selectNone()
       else controller.selectAll()
     },
-    scan: async () => {
-      publish({ ...snapshot, phase: 'loading', error: null })
+    clearResults: () => {
+      publish({ ...snapshot, results: [] })
+    },
+    /**
+     * `keepResults` is for the refresh that follows an import: the report the
+     * user is reading must survive, otherwise the rows that were just imported
+     * still show "ready to import" while the summary of what happened vanishes.
+     * A user-initiated scan starts a new report instead.
+     */
+    scan: async (options = {}) => {
+      const keepResults = options?.keepResults === true
+      publish({
+        ...snapshot,
+        phase: 'loading',
+        error: null,
+        results: keepResults ? snapshot.results : [],
+      })
       try {
         const body = await request('/api/dsh-ccswitch/scan')
         const profiles = Array.isArray(body.profiles) ? body.profiles : []
@@ -79,7 +94,7 @@ export function createCCSwitchImportController({
           phase: 'ready',
           profiles,
           selectedIds,
-          results: [],
+          results: keepResults ? snapshot.results : [],
           error: null,
           source: typeof body.source === 'string' ? body.source : undefined,
           probedPath: typeof body.probedPath === 'string' ? body.probedPath : undefined,
@@ -100,7 +115,15 @@ export function createCCSwitchImportController({
         })
         const results = Array.isArray(body.results) ? body.results : []
         publish({ ...snapshot, phase: 'done', results, error: null })
-        await onImported(results)
+        // The Host write already succeeded. Refreshing the settings snapshot is
+        // best-effort: if it fails it reports its own error in the reasoning
+        // panel, and it must not turn a completed import into a red banner here
+        // that hides the per-row report the user actually needs.
+        try {
+          await onImported(results)
+        } catch {
+          // The import report published above is the source of truth.
+        }
         return snapshot
       } catch (error) {
         publish({ ...snapshot, phase: 'error', error: error instanceof Error ? error.message : String(error) })

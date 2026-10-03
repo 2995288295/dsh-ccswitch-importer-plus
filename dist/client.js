@@ -145,6 +145,22 @@ window.__ModuleLoader__.load({
 
 		// lib/core/safety.js
 		var REMOTE_SETTINGS_CONFLICT_CODE = "settings/conflict";
+		var BLOCKED = {
+		  INVALID_SETTINGS_JSON: "invalid-settings-json",
+		  UNSUPPORTED_APP_TYPE: "unsupported-app-type",
+		  MISSING_OPENAI_KEY: "missing-openai-key",
+		  MISSING_CODEX_PROVIDER: "missing-codex-provider",
+		  MISSING_ANTHROPIC_KEY: "missing-anthropic-key",
+		  MISSING_ANTHROPIC_BASE_URL: "missing-anthropic-base-url",
+		  MISSING_OPENCODE_KEY: "missing-opencode-key",
+		  MISSING_OPENCODE_BASE_URL: "missing-opencode-base-url",
+		  UNSUPPORTED_OPENCODE_ADAPTER: "unsupported-opencode-adapter",
+		  /** Two selected rows resolve to the same provider key in one batch. */
+		  DUPLICATE_PROVIDER_KEY: "duplicate-provider-key",
+		  /** Fallback for a row that is blocked for a reason this build does not know. */
+		  UNKNOWN: "blocked"
+		};
+		var BLOCKED_CODES = new Set(Object.values(BLOCKED));
 
 		// src/client/controller.mjs
 		function createReasoningSettingsController(api) {
@@ -272,8 +288,23 @@ window.__ModuleLoader__.load({
 		      if (allSelected) controller.selectNone();
 		      else controller.selectAll();
 		    },
-		    scan: async () => {
-		      publish({ ...snapshot, phase: "loading", error: null });
+		    clearResults: () => {
+		      publish({ ...snapshot, results: [] });
+		    },
+		    /**
+		     * `keepResults` is for the refresh that follows an import: the report the
+		     * user is reading must survive, otherwise the rows that were just imported
+		     * still show "ready to import" while the summary of what happened vanishes.
+		     * A user-initiated scan starts a new report instead.
+		     */
+		    scan: async (options = {}) => {
+		      const keepResults = options?.keepResults === true;
+		      publish({
+		        ...snapshot,
+		        phase: "loading",
+		        error: null,
+		        results: keepResults ? snapshot.results : []
+		      });
 		      try {
 		        const body = await request("/api/dsh-ccswitch/scan");
 		        const profiles = Array.isArray(body.profiles) ? body.profiles : [];
@@ -282,7 +313,7 @@ window.__ModuleLoader__.load({
 		          phase: "ready",
 		          profiles,
 		          selectedIds,
-		          results: [],
+		          results: keepResults ? snapshot.results : [],
 		          error: null,
 		          source: typeof body.source === "string" ? body.source : void 0,
 		          probedPath: typeof body.probedPath === "string" ? body.probedPath : void 0
@@ -303,7 +334,10 @@ window.__ModuleLoader__.load({
 		        });
 		        const results = Array.isArray(body.results) ? body.results : [];
 		        publish({ ...snapshot, phase: "done", results, error: null });
-		        await onImported(results);
+		        try {
+		          await onImported(results);
+		        } catch {
+		        }
 		        return snapshot;
 		      } catch (error) {
 		        publish({ ...snapshot, phase: "error", error: error instanceof Error ? error.message : String(error) });
@@ -341,6 +375,25 @@ window.__ModuleLoader__.load({
 		    "importer.status.update": "\u5C06\u66F4\u65B0",
 		    "importer.status.unchanged": "\u65E0\u9700\u66F4\u65B0",
 		    "importer.status.blocked": "\u5DF2\u963B\u6B62",
+		    "importer.status.failed": "\u5931\u8D25",
+		    "importer.status.skipped": "\u5DF2\u8DF3\u8FC7",
+		    "importer.loading": "\u6B63\u5728\u8BFB\u53D6 CCSwitch \u914D\u7F6E\u2026",
+		    "importer.importing": "\u5BFC\u5165\u4E2D\u2026",
+		    "importer.resultsTitle": "\u5BFC\u5165\u7ED3\u679C",
+		    "importer.resultsClear": "\u6E05\u9664",
+		    "importer.resultError": "\u9519\u8BEF\uFF1A{message}",
+		    "importer.resultSkipped": "\u672A\u9009\u62E9\uFF0C\u6216\u8BE5\u914D\u7F6E\u4E0D\u53EF\u5BFC\u5165",
+		    "importer.blocked.invalid-settings-json": "\u8BBE\u7F6E\u5185\u5BB9\u4E0D\u662F\u5408\u6CD5 JSON",
+		    "importer.blocked.unsupported-app-type": "\u4E0D\u652F\u6301\u7684 app \u7C7B\u578B\uFF1A{detail}",
+		    "importer.blocked.missing-openai-key": "\u7F3A\u5C11 API key\uFF08auth.OPENAI_API_KEY\uFF09",
+		    "importer.blocked.missing-codex-provider": "config \u91CC\u6CA1\u6709\u53EF\u7528\u7684 [model_providers.custom] \u6BB5",
+		    "importer.blocked.missing-anthropic-key": "\u7F3A\u5C11 API key\uFF08env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY\uFF09",
+		    "importer.blocked.missing-anthropic-base-url": "\u7F3A\u5C11 base URL\uFF08env.ANTHROPIC_BASE_URL\uFF09",
+		    "importer.blocked.missing-opencode-key": "\u7F3A\u5C11 API key\uFF08options.apiKey\uFF09",
+		    "importer.blocked.missing-opencode-base-url": "\u7F3A\u5C11 base URL\uFF08options.baseURL\uFF09",
+		    "importer.blocked.unsupported-opencode-adapter": "\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A{detail}",
+		    "importer.blocked.duplicate-provider-key": "\u672C\u6279\u91CC provider \u952E\u91CD\u590D\uFF1A{detail}",
+		    "importer.blocked.blocked": "\u8BE5\u914D\u7F6E\u65E0\u6CD5\u5BFC\u5165",
 		    "reasoning.title": "\u6A21\u578B\u63A8\u7406",
 		    "reasoning.intro": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\u3002",
 		    "reasoning.hintExpanded": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\uFF1B\u4FDD\u5B58\u540E\u5373\u53EF\u5728\u6A21\u578B\u9009\u62E9\u5668\u4E2D\u5207\u6362\u3002",
@@ -363,6 +416,11 @@ window.__ModuleLoader__.load({
 		    "reasoning.customNullPlaceholder": "\u7559\u7A7A\u8868\u793A null",
 		    "reasoning.customWireAria": "{model} {level} wire \u503C",
 		    "reasoning.remoteUpdated": "\u8FDC\u7AEF\u5DF2\u66F4\u65B0",
+		    "reasoning.unsaved": "\u6709\u672A\u4FDD\u5B58\u7684\u6539\u52A8",
+		    "reasoning.discard": "\u64A4\u9500\u6539\u52A8",
+		    "reasoning.discardTitle": "\u653E\u5F03\u5C1A\u672A\u4FDD\u5B58\u7684\u7F16\u8F91",
+		    "reasoning.reloadDirty": "\u4E22\u5F03\u672C\u5730\u6539\u52A8\u5E76\u91CD\u65B0\u8F7D\u5165",
+		    "reasoning.customMarker": "\u5DF2\u81EA\u5B9A\u4E49 {count} \u9879",
 		    "reasoning.reload": "\u91CD\u65B0\u8F7D\u5165",
 		    "reasoning.save": "\u4FDD\u5B58",
 		    "reasoning.saving": "\u4FDD\u5B58\u4E2D\u2026",
@@ -395,6 +453,25 @@ window.__ModuleLoader__.load({
 		    "importer.status.update": "will update",
 		    "importer.status.unchanged": "up to date",
 		    "importer.status.blocked": "blocked",
+		    "importer.status.failed": "failed",
+		    "importer.status.skipped": "skipped",
+		    "importer.loading": "Reading CCSwitch configuration\u2026",
+		    "importer.importing": "Importing\u2026",
+		    "importer.resultsTitle": "Import results",
+		    "importer.resultsClear": "Clear",
+		    "importer.resultError": "error: {message}",
+		    "importer.resultSkipped": "not selected, or not importable",
+		    "importer.blocked.invalid-settings-json": "settings content is not valid JSON",
+		    "importer.blocked.unsupported-app-type": "unsupported app type: {detail}",
+		    "importer.blocked.missing-openai-key": "missing API key (auth.OPENAI_API_KEY)",
+		    "importer.blocked.missing-codex-provider": "no usable [model_providers.custom] section in config",
+		    "importer.blocked.missing-anthropic-key": "missing API key (env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY)",
+		    "importer.blocked.missing-anthropic-base-url": "missing base URL (env.ANTHROPIC_BASE_URL)",
+		    "importer.blocked.missing-opencode-key": "missing API key (options.apiKey)",
+		    "importer.blocked.missing-opencode-base-url": "missing base URL (options.baseURL)",
+		    "importer.blocked.unsupported-opencode-adapter": "unsupported opencode adapter: {detail}",
+		    "importer.blocked.duplicate-provider-key": "duplicate provider key in this batch: {detail}",
+		    "importer.blocked.blocked": "this profile cannot be imported",
 		    "reasoning.title": "Model reasoning",
 		    "reasoning.intro": "Configure reasoning levels for every model of your custom providers.",
 		    "reasoning.hintExpanded": "Configure reasoning levels per model; they become selectable in the model picker after saving.",
@@ -417,6 +494,11 @@ window.__ModuleLoader__.load({
 		    "reasoning.customNullPlaceholder": "empty means null",
 		    "reasoning.customWireAria": "{model} {level} wire value",
 		    "reasoning.remoteUpdated": "updated on the remote",
+		    "reasoning.unsaved": "Unsaved changes",
+		    "reasoning.discard": "Discard",
+		    "reasoning.discardTitle": "Drop the edits that are not saved yet",
+		    "reasoning.reloadDirty": "Discard local changes and reload",
+		    "reasoning.customMarker": "{count} custom",
 		    "reasoning.reload": "Reload",
 		    "reasoning.save": "Save",
 		    "reasoning.saving": "Saving\u2026",
@@ -599,10 +681,12 @@ window.__ModuleLoader__.load({
 		// src/ui/ReasoningSettingsSection.mjs
 		var h = import_react.default.createElement;
 		var STATUS_SAVED_DIRTY = "saved-dirty";
+		var STATUS_DIRTY = "dirty";
 		function displayStatus(status, tr, rawError) {
 		  if (status === "saving") return tr("reasoning.saving", "\u4FDD\u5B58\u4E2D\u2026");
 		  if (status === "saved") return tr("reasoning.saved", "\u5DF2\u4FDD\u5B58");
 		  if (status === STATUS_SAVED_DIRTY) return tr("reasoning.savedDirty", "\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u4ECD\u6709\u672A\u4FDD\u5B58\u7684\u6539\u52A8");
+		  if (status === STATUS_DIRTY) return tr("reasoning.unsaved", "\u6709\u672A\u4FDD\u5B58\u7684\u6539\u52A8");
 		  if (!status) return "";
 		  return tr("reasoning.saveFailed", "\u4FDD\u5B58\u5931\u8D25\uFF1A{message}", { message: rawError ?? status });
 		}
@@ -664,7 +748,11 @@ window.__ModuleLoader__.load({
 		      return { ...current, efforts };
 		    });
 		  };
+		  const dirty = draftSignature(draft) !== draftSignature(baseline);
 		  const reload = () => {
+		    if (dirty && typeof globalThis.confirm === "function" && !globalThis.confirm(tr("reasoning.reloadDirty", "\u4E22\u5F03\u672C\u5730\u6539\u52A8\u5E76\u91CD\u65B0\u8F7D\u5165"))) {
+		      return;
+		    }
 		    const remoteSnapshot = controller.getSnapshot();
 		    const remoteModel = remoteSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
 		    applyReconciledState(reloadDraft({ remoteModel, remoteRevision: remoteSnapshot.revision }));
@@ -698,8 +786,13 @@ window.__ModuleLoader__.load({
 		  };
 		  const modelName = model.name || model.id;
 		  const selectedCount = Object.keys(draft.efforts).length;
+		  const customCount = Object.entries(draft.efforts).filter(([level, value]) => {
+		    const normalized = value === "" || value === void 0 ? null : value;
+		    return normalized !== (level === "off" ? null : level);
+		  }).length;
 		  const customBodyId = ("dsh-reasoning-custom-" + route + "-" + model.id).replace(/[^a-zA-Z0-9_-]/g, "-");
-		  const statusClass = status === "saving" ? "dsh-reasoning-status dsh-reasoning-status--saving" : status === "saved" ? "dsh-reasoning-status dsh-reasoning-status--success" : status === STATUS_SAVED_DIRTY ? "dsh-reasoning-status dsh-reasoning-status--dirty" : status ? "dsh-reasoning-status dsh-reasoning-status--error" : "dsh-reasoning-status";
+		  const effectiveStatus = dirty && (status === "saved" || status === "") ? STATUS_DIRTY : status;
+		  const statusClass = effectiveStatus === "saving" ? "dsh-reasoning-status dsh-reasoning-status--saving" : effectiveStatus === "saved" ? "dsh-reasoning-status dsh-reasoning-status--success" : effectiveStatus === STATUS_SAVED_DIRTY || effectiveStatus === STATUS_DIRTY ? "dsh-reasoning-status dsh-reasoning-status--dirty" : effectiveStatus ? "dsh-reasoning-status dsh-reasoning-status--error" : "dsh-reasoning-status";
 		  return h(
 		    "article",
 		    { className: "dsh-reasoning-model" + (collapsed ? " dsh-reasoning-model--collapsed" : "") },
@@ -757,7 +850,8 @@ window.__ModuleLoader__.load({
 		          "div",
 		          { className: "dsh-reasoning-levels__heading" },
 		          h("span", { className: "dsh-reasoning-levels__label" }, tr("reasoning.levelsHeading", "\u53EF\u7528\u7B49\u7EA7")),
-		          h("span", { className: "dsh-reasoning-levels__summary" }, tr("reasoning.levelsSelected", "\u5DF2\u9009 {count} \u9879", { count: selectedCount }))
+		          h("span", { className: "dsh-reasoning-levels__summary" }, tr("reasoning.levelsSelected", "\u5DF2\u9009 {count} \u9879", { count: selectedCount })),
+		          customCount > 0 ? h("span", { className: "dsh-reasoning-levels__custom" }, tr("reasoning.customMarker", "\u5DF2\u81EA\u5B9A\u4E49 {count} \u9879", { count: customCount })) : null
 		        ),
 		        h(
 		          "div",
@@ -816,9 +910,16 @@ window.__ModuleLoader__.load({
 		      "footer",
 		      { className: "dsh-reasoning-model__footer" },
 		      h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? tr("reasoning.remoteUpdated", "\u8FDC\u7AEF\u5DF2\u66F4\u65B0") : ""),
-		      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, tr("reasoning.reload", "\u91CD\u65B0\u8F7D\u5165")),
-		      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status, tr, saveError)),
-		      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? tr("reasoning.saving", "\u4FDD\u5B58\u4E2D\u2026") : tr("reasoning.save", "\u4FDD\u5B58"))
+		      remoteChanged && h("button", {
+		        className: "dsh-reasoning-reload",
+		        type: "button",
+		        title: dirty ? tr("reasoning.reloadDirty", "\u4E22\u5F03\u672C\u5730\u6539\u52A8\u5E76\u91CD\u65B0\u8F7D\u5165") : void 0,
+		        onClick: reload
+		      }, tr("reasoning.reload", "\u91CD\u65B0\u8F7D\u5165")),
+		      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(effectiveStatus, tr, saveError)),
+		      // Saving an unchanged draft costs a settings.write and a full describe()
+		      // round trip without changing anything, so the button tracks the draft.
+		      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving" || !dirty, onClick: save }, status === "saving" ? tr("reasoning.saving", "\u4FDD\u5B58\u4E2D\u2026") : tr("reasoning.save", "\u4FDD\u5B58"))
 		    )
 		  );
 		}
@@ -889,18 +990,39 @@ window.__ModuleLoader__.load({
 		}
 		function statusKey(status) {
 		  if (status === "new") return "importer.status.new";
-		  if (status === "update") return "importer.status.update";
+		  if (status === "update" || status === "updated") return "importer.status.update";
 		  if (status === "unchanged") return "importer.status.unchanged";
 		  if (status === "blocked") return "importer.status.blocked";
+		  if (status === "failed") return "importer.status.failed";
+		  if (status === "skipped") return "importer.status.skipped";
 		  return void 0;
 		}
 		function statusLabel(status, tr) {
 		  const key = statusKey(status);
 		  return key ? tr(key, status) : status ?? "";
 		}
+		var SAFE_BADGES = /* @__PURE__ */ new Set(["new", "update", "updated", "unchanged", "blocked", "failed", "skipped"]);
 		function badgeClass(status) {
-		  const safe = status === "new" || status === "update" || status === "unchanged" || status === "blocked" ? status : "unchanged";
+		  const safe = SAFE_BADGES.has(status) ? status : "unchanged";
 		  return `dsh-ccswitch-import__badge dsh-ccswitch-import__badge--${safe}`;
+		}
+		var BLOCKED_FALLBACK = {
+		  "invalid-settings-json": "\u8BBE\u7F6E\u5185\u5BB9\u4E0D\u662F\u5408\u6CD5 JSON",
+		  "unsupported-app-type": "\u4E0D\u652F\u6301\u7684 app \u7C7B\u578B\uFF1A{detail}",
+		  "missing-openai-key": "\u7F3A\u5C11 API key\uFF08auth.OPENAI_API_KEY\uFF09",
+		  "missing-codex-provider": "config \u91CC\u6CA1\u6709\u53EF\u7528\u7684 [model_providers.custom] \u6BB5",
+		  "missing-anthropic-key": "\u7F3A\u5C11 API key\uFF08env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY\uFF09",
+		  "missing-anthropic-base-url": "\u7F3A\u5C11 base URL\uFF08env.ANTHROPIC_BASE_URL\uFF09",
+		  "missing-opencode-key": "\u7F3A\u5C11 API key\uFF08options.apiKey\uFF09",
+		  "missing-opencode-base-url": "\u7F3A\u5C11 base URL\uFF08options.baseURL\uFF09",
+		  "unsupported-opencode-adapter": "\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A{detail}",
+		  "duplicate-provider-key": "\u672C\u6279\u91CC provider \u952E\u91CD\u590D\uFF1A{detail}",
+		  "blocked": "\u8BE5\u914D\u7F6E\u65E0\u6CD5\u5BFC\u5165"
+		};
+		function blockedLabel(source, tr) {
+		  const code = typeof source?.blockedCode === "string" && BLOCKED_FALLBACK[source.blockedCode] ? source.blockedCode : "blocked";
+		  const detail = typeof source?.blockedDetail === "string" ? source.blockedDetail : "";
+		  return tr(`importer.blocked.${code}`, BLOCKED_FALLBACK[code], { detail });
 		}
 		function emptyMessage(snapshot, tr) {
 		  const probed = snapshot.probedPath || "~/.cc-switch/cc-switch.db";
@@ -918,6 +1040,14 @@ window.__ModuleLoader__.load({
 		  }
 		  return tr("importer.empty", "\u6CA1\u6709\u53EF\u8BFB\u53D6\u7684 CCSwitch provider\u3002");
 		}
+		function resultDetail(result, tr) {
+		  if (result.status === "failed") {
+		    return result.error ? tr("importer.resultError", "\u9519\u8BEF\uFF1A{message}", { message: result.error }) : "";
+		  }
+		  if (result.status === "blocked") return blockedLabel(result, tr);
+		  if (result.status === "skipped") return tr("importer.resultSkipped", "\u672A\u9009\u62E9\uFF0C\u6216\u8BE5\u914D\u7F6E\u4E0D\u53EF\u5BFC\u5165");
+		  return "";
+		}
 		function CCSwitchImportSection({ controller, collapse, setCollapse, t }) {
 		  const tr = makeTranslator(t);
 		  if (!controller) return null;
@@ -926,7 +1056,10 @@ window.__ModuleLoader__.load({
 		    if (snapshot.phase === "idle") void controller.scan().catch(() => {
 		    });
 		  }, [controller, snapshot.phase]);
-		  const busy = snapshot.phase === "loading" || snapshot.phase === "importing";
+		  const scanning = snapshot.phase === "loading";
+		  const importing = snapshot.phase === "importing";
+		  const busy = scanning || importing;
+		  const awaitingFirstScan = snapshot.phase === "idle" || scanning;
 		  const selected = new Set(snapshot.selectedIds);
 		  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
 		  const importableIds = profiles.filter(isSelectable).map((profile) => profile.profileId);
@@ -967,14 +1100,22 @@ window.__ModuleLoader__.load({
 		        !collapsed && h2(
 		          "div",
 		          { className: "dsh-ccswitch-import__actions" },
-		          h2("button", { className: "dsh-ccswitch-import__secondary", type: "button", disabled: busy, onClick: () => {
-		            void controller.scan().catch(() => {
-		            });
-		          } }, busy ? tr("importer.scanning", "\u5904\u7406\u4E2D\u2026") : tr("importer.scan", "\u626B\u63CF")),
-		          h2("button", { className: "dsh-ccswitch-import__primary", type: "button", disabled: busy || selected.size === 0, onClick: () => {
-		            void controller.importSelected().catch(() => {
-		            });
-		          } }, tr("importer.importSelected", "\u5BFC\u5165\u9009\u4E2D"))
+		          h2(
+		            "button",
+		            { className: "dsh-ccswitch-import__secondary", type: "button", disabled: busy, onClick: () => {
+		              void controller.scan().catch(() => {
+		              });
+		            } },
+		            scanning ? tr("importer.scanning", "\u5904\u7406\u4E2D\u2026") : tr("importer.scan", "\u626B\u63CF")
+		          ),
+		          h2(
+		            "button",
+		            { className: "dsh-ccswitch-import__primary", type: "button", disabled: busy || selected.size === 0, onClick: () => {
+		              void controller.importSelected().catch(() => {
+		              });
+		            } },
+		            importing ? tr("importer.importing", "\u5BFC\u5165\u4E2D\u2026") : tr("importer.importSelected", "\u5BFC\u5165\u9009\u4E2D")
+		          )
 		        )
 		      )
 		    ),
@@ -982,7 +1123,7 @@ window.__ModuleLoader__.load({
 		      "div",
 		      { id: "dsh-ccswitch-import-body", className: "dsh-ccswitch-import__body", hidden: collapsed },
 		      snapshot.error && h2("p", { role: "alert", className: "dsh-ccswitch-import__error" }, snapshot.error),
-		      profiles.length === 0 && snapshot.phase !== "loading" ? h2("p", { className: "dsh-ccswitch-import__empty" }, emptyMessage(snapshot, tr)) : h2(
+		      profiles.length === 0 ? awaitingFirstScan ? h2("p", { className: "dsh-ccswitch-import__empty" }, tr("importer.loading", "\u6B63\u5728\u8BFB\u53D6 CCSwitch \u914D\u7F6E\u2026")) : h2("p", { className: "dsh-ccswitch-import__empty" }, emptyMessage(snapshot, tr)) : h2(
 		        "div",
 		        { className: "dsh-ccswitch-import__list" },
 		        h2(
@@ -1036,6 +1177,9 @@ window.__ModuleLoader__.load({
 		                { className: "dsh-ccswitch-import__meta-line" },
 		                h2("code", { className: "dsh-ccswitch-import__provider-key" }, profile.providerKey || tr("importer.pendingKey", "\u5F85\u751F\u6210 provider key")),
 		                h2("span", null, `${profile.credential === "found" ? tr("importer.credentialFound", "\u51ED\u636E\u5DF2\u627E\u5230") : tr("importer.credentialMissing", "\u7F3A\u5C11\u51ED\u636E")} \xB7 ${(profile.modelIds ?? []).join(", ") || tr("importer.noModels", "\u65E0\u6A21\u578B")}`),
+		                // A blocked row used to show only "blocked" with no reason:
+		                // the Host had already worked out exactly what was wrong.
+		                profile.status === "blocked" ? h2("span", { className: "dsh-ccswitch-import__blocked-reason" }, blockedLabel(profile, tr)) : null,
 		                Array.isArray(profile.warnings) && profile.warnings.length > 0 ? h2("span", { className: "dsh-ccswitch-import__warnings" }, profile.warnings.join("\uFF1B")) : null
 		              )
 		            ),
@@ -1044,13 +1188,31 @@ window.__ModuleLoader__.load({
 		        })
 		      ),
 		      snapshot.results.length > 0 && h2(
-		        "ul",
-		        { className: "dsh-ccswitch-import__results" },
-		        ...snapshot.results.map((result) => h2(
-		          "li",
-		          { key: `${result.profileId}-${result.status}` },
-		          `${result.profileId}: ${result.status === "failed" ? result.error : statusLabel(result.status, tr)}`
-		        ))
+		        "div",
+		        { className: "dsh-ccswitch-import__report" },
+		        h2(
+		          "div",
+		          { className: "dsh-ccswitch-import__report-head" },
+		          h2("strong", null, tr("importer.resultsTitle", "\u5BFC\u5165\u7ED3\u679C")),
+		          h2("button", { type: "button", className: "dsh-ccswitch-import__link", onClick: () => controller.clearResults() }, tr("importer.resultsClear", "\u6E05\u9664"))
+		        ),
+		        h2(
+		          "ul",
+		          { className: "dsh-ccswitch-import__results" },
+		          ...snapshot.results.map((result, index) => {
+		            const detail = resultDetail(result, tr);
+		            return h2(
+		              "li",
+		              {
+		                key: `${result.profileId ?? "row"}-${result.status ?? "unknown"}-${index}`,
+		                className: "dsh-ccswitch-import__result" + (result.status === "failed" ? " dsh-ccswitch-import__result--failed" : "")
+		              },
+		              h2("span", { className: badgeClass(result.status) }, statusLabel(result.status, tr)),
+		              h2("strong", null, result.profileName || result.profileId || ""),
+		              detail ? h2("span", { className: "dsh-ccswitch-import__result-detail" }, detail) : null
+		            );
+		          })
+		        )
 		      )
 		    )
 		  );
@@ -1179,7 +1341,22 @@ window.__ModuleLoader__.load({
 		.dsh-ccswitch-import__badge--unchanged{color:var(--dsw-alias-label-tertiary);}
 		.dsh-ccswitch-import__badge--blocked{color:var(--dsw-alias-label-dimmed);}
 		.dsh-ccswitch-import__error{margin:0 0 12px;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;}
-		.dsh-ccswitch-import__results{margin:12px 0 0;padding-left:20px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;}
+		.dsh-ccswitch-import__results{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;}
+		.dsh-ccswitch-import__meta-line .dsh-ccswitch-import__blocked-reason{color:var(--dsw-alias-state-error-primary);}
+		.dsh-ccswitch-import__badge--updated{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary);}
+		.dsh-ccswitch-import__badge--failed{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);}
+		.dsh-ccswitch-import__badge--skipped{color:var(--dsw-alias-label-dimmed);}
+		.dsh-ccswitch-import__report{margin-top:12px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);}
+		.dsh-ccswitch-import__report-head{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+		.dsh-ccswitch-import__report-head strong{color:var(--dsw-alias-label-primary);font-size:12px;font-weight:500;line-height:18px;}
+		.dsh-ccswitch-import__link{padding:0;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer;}
+		.dsh-ccswitch-import__link:hover{text-decoration:underline;}
+		.dsh-ccswitch-import__link:focus-visible{outline:2px solid var(--dsw-alias-border-l3);outline-offset:1px;}
+		.dsh-ccswitch-import__result{display:flex;align-items:baseline;gap:8px;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;}
+		.dsh-ccswitch-import__result strong{flex:none;max-width:45%;color:var(--dsw-alias-label-primary);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+		.dsh-ccswitch-import__result-detail{min-width:0;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;}
+		.dsh-ccswitch-import__result--failed .dsh-ccswitch-import__result-detail{color:var(--dsw-alias-state-error-primary);}
+		.dsh-reasoning-levels__custom{color:var(--dsw-alias-brand-primary);font-size:11px;line-height:18px;white-space:nowrap;}
 		@media (max-width:640px){[role='dialog']:has(.dsh-ccswitch-import)>nav{flex:0 0 56px;width:56px;min-width:56px;}[role='dialog']:has(.dsh-ccswitch-import)>nav button{width:40px;min-width:40px;padding:0;justify-content:center;}[role='dialog']:has(.dsh-ccswitch-import)>nav button>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}[role='dialog']:has(.dsh-ccswitch-import)>div{min-width:0;}.dsh-ccswitch-import__header{flex-direction:column;}.dsh-ccswitch-import__header-actions{width:100%;justify-content:space-between;}.dsh-ccswitch-import__header-actions .dsh-ccswitch-import__actions{flex:1;}.dsh-ccswitch-import__actions{width:100%;flex-direction:column;align-items:stretch;}.dsh-ccswitch-import__actions button{width:100%;}.dsh-ccswitch-import__row{grid-template-columns:auto minmax(0,1fr);min-width:0;}.dsh-ccswitch-import__content{min-width:0;}.dsh-ccswitch-import__badge{grid-column:2;justify-self:start;}.dsh-reasoning-model__header{align-items:stretch;flex-direction:column;gap:10px;padding:10px;}.dsh-reasoning-model__mode-area{width:100%;justify-content:space-between;}.dsh-reasoning-model__body{padding:10px;}.dsh-reasoning-model__footer{padding:9px 10px;}.dsh-reasoning-levels__heading{align-items:flex-start;}.dsh-reasoning-levels__options{gap:6px;}.dsh-reasoning-custom__body{grid-template-columns:minmax(0,1fr);}}`;
 		var STATUS_CSS = ".dsh-reasoning-status--dirty{color:var(--dsw-alias-label-secondary);}\n";
 		function installEmbedStyles() {
@@ -1205,7 +1382,14 @@ window.__ModuleLoader__.load({
 		  const controller = createReasoningSettingsController(ctx.remote);
 		  const importer = createCCSwitchImportController({
 		    getRevision: () => controller.getSnapshot().revision,
-		    onImported: () => controller.refresh()
+		    // The reasoning panel mirrors the settings document the import just wrote,
+		    // so it has to refresh — and so does the source scan, otherwise the rows
+		    // that were imported keep their "ready to import" badge. `keepResults`
+		    // preserves the report `importSelected` published a moment ago.
+		    onImported: async () => {
+		      controller.refresh();
+		      await importer.scan({ keepResults: true });
+		    }
 		  });
 		  const t = ctx.locale.bind("dsh-ccswitch-importer-plus");
 		  const removeStyles = installEmbedStyles();

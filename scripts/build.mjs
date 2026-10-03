@@ -1,9 +1,13 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-export const PLUGIN_ID = "dsh-ccswitch-importer";
+export const PLUGIN_ID = "dsh-ccswitch-importer-plus";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = resolve(ROOT, "dist");

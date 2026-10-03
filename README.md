@@ -1,12 +1,14 @@
-# DSH CCSwitch 导入器
+# DSH CCSwitch 导入器（社区增强版）
 
-将 CCSwitch 的 Codex provider 配置导入 DeepSeek Harness，并在同一个「设置 -> 模型」页面管理每个模型的推理深度。
+将 CCSwitch 里的 Codex、Claude、Claude Desktop 与 OpenCode provider 导入 DeepSeek Harness，并在同一个「设置 -> 模型」页面管理每个模型的推理深度。
 
 [English README](./README.en.md)
 
+> **衍生作品说明**：本插件是 [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-importer)（Apache-2.0）的**衍生版**，由第三方维护，**不是原作者的官方版本**。上游版本面向 DSH 0.1.x；本版本针对 **DSH 0.2.0-rc.2** 重写了 Host/Client 接线，并修复了批量导入、凭据脱敏、多语言等问题。npm 包名为 `dsh-ccswitch-importer-plus`，插件 ID 与 loader ID 与包名一致。完整变更清单见[与上游的差异](#与上游的差异)。
+
 ## 功能
 
-- 只读扫描 `~/.cc-switch/cc-switch.db`，识别自定义 Codex provider；官方和默认 profile 会跳过。
+- 只读扫描 `~/.cc-switch/cc-switch.db`，识别自定义 **Codex**、**Claude**、**Claude Desktop** 与 **OpenCode** provider；官方和默认 profile 会跳过。
 - 将 endpoint、协议、模型 ID 和 API key 导入 DSH 的 `llm-pi-ai` 设置。
 - API key 只在 Host 进程中读取，并通过 DSH credentials 服务保存为 `apiKeyEnv` 引用；扫描和导入响应不包含 key。
 - 从 Codex TOML 顶层 `model_reasoning_effort` 预填模型推理配置，同时允许之后在 DSH 中修改。
@@ -22,13 +24,13 @@ CCSwitch 是只读导入源。首次导入后，DSH 设置和 credentials 服务
 从 GitHub 安装：
 
 ```bash
-dsh plugin --profile desktop add github:wtiaw/dsh-ccswitch-importer
+dsh plugin --profile desktop add github:2995288295/dsh-ccswitch-importer-plus
 ```
 
 从本地源码安装：
 
 ```bash
-dsh plugin --profile desktop add ./dsh-ccswitch-importer
+dsh plugin --profile desktop add ./dsh-ccswitch-importer-plus
 ```
 
 安装或更新后刷新 DSH Web 页面，打开 **设置 -> 模型**。
@@ -74,8 +76,32 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host 路由只接受 loopback、same-origin 请求；API key 不进入浏览器、日志、摘要或错误文本。
 - 读取需要 Node.js 22.19 或更高版本，以支持只读 SQLite API。
-- 插件只处理 CCSwitch 的自定义 Codex provider 和当前数据库字段；不会探测第三方 API 的真实推理能力。
+- 插件只处理 CCSwitch 的自定义 Codex / Claude / Claude Desktop / OpenCode provider 和当前数据库字段；不会探测第三方 API 的真实推理能力。
 - 未知模型和不合法等级默认关闭，避免向网关发送未确认的 reasoning 参数。
+
+## 与上游的差异
+
+相对 [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-importer)（`0.1.3`，2026-09-24，面向 DSH 0.1.x），本版本的主要改动：
+
+**针对 DSH 0.2.0-rc.2 的兼容性重写**
+
+- peer 依赖改为 `^0.2.0-rc.2`，移除 0.2.0 已废弃的 `@deepseek-ai/dsh-client-runtime` 注入。
+- 适配 0.2.0 的 `{ ok, value }` 远端信封与 `settings.describe()` 命名空间视图。
+- 导入源从 Codex 扩展到 Codex、Claude、Claude Desktop 与 OpenCode。
+- 新增模型目录回退、模型探测（probe）与 loopback 错误透出。
+- 插件挂载到原生「模型」页面底部的 footer 槽位，与原生 UI 共存。
+
+**缺陷修复**
+
+- 批量导入此前只成功第一条：现在每次写入成功后重新读取 settings revision，作为下一条的并发前置条件。
+- 凭据脱敏从「按 `sk-` 形状匹配」改为「按已知密钥的值脱敏」，导入响应与 stderr 都不再回显 API key。
+- `POST /import` 现在强制要求同源 `Origin` 头；超长请求体会销毁连接而不是静默忽略。
+- 保存推理等级期间若又产生新改动，状态显示为「已保存（有未保存修改）」而不是「已保存」。
+- 空扫描结果现在区分「未安装 CCSwitch / 无 profile / 数据库不可读 / Node 版本过低」，并回显探测路径。
+- `node:sqlite` 改为懒加载，Node 版本不足时给出可读提示，而不是整个插件加载失败。
+- 界面文案全部走 zh/en 语言目录，不再硬编码中文。
+
+上游版权与许可证原样保留在 `LICENSE`；改动声明见 `NOTICE`，且每个被改动的源文件头部都带改动提示。
 
 ## 开发与验证
 
@@ -87,4 +113,4 @@ npm test
 npm run pack:check
 ```
 
-`npm run build` 生成 DSH Host bundle 和带有 `window.__ModuleLoader__.load` 注册的 Client bundle。发布包只包含 `dist`、patch、README 和许可证，不包含源码与测试。
+`npm run build` 生成 DSH Host bundle 和带有 `window.__ModuleLoader__.load` 注册的 Client bundle。发布包只包含 `dist`、patch、README、NOTICE 和许可证，不包含源码与测试。

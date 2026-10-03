@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-	id: "dsh-ccswitch-importer",
+	id: "dsh-ccswitch-importer-plus",
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
@@ -143,6 +143,9 @@ window.__ModuleLoader__.load({
 		  };
 		}
 
+		// lib/core/safety.js
+		var REMOTE_SETTINGS_CONFLICT_CODE = "settings/conflict";
+
 		// src/client/controller.mjs
 		function createReasoningSettingsController(api) {
 		  let snapshot = { status: "idle", writable: false, revision: void 0, providers: {}, error: null };
@@ -161,13 +164,13 @@ window.__ModuleLoader__.load({
 		  const performRefresh = async () => {
 		    publish({ ...snapshot, status: "loading", error: null });
 		    try {
-		      const response = await api.settings.describe({});
-		      if (!response.result.ok) throw new Error(response.result.error.message);
-		      const namespace = response.result.value.namespaces.find((entry) => entry.ns === "llm-pi-ai");
+		      const response = await api.settings.describe();
+		      if (!response.ok) throw new Error(response.error.message);
+		      const namespace = response.value.namespaces.find((entry) => entry.ns === "llm-pi-ai");
 		      const providers = namespace?.value?.providers ?? {};
 		      publish({
 		        status: "ready",
-		        writable: response.result.value.writable === true,
+		        writable: response.value.writable === true,
 		        revision: namespace?.revision,
 		        providers,
 		        error: null
@@ -189,8 +192,14 @@ window.__ModuleLoader__.load({
 		      const before = snapshot.providers[route];
 		      const after = updateModelReasoning(before, modelId, mode, efforts);
 		      const mutation = settingsMutation(route, before, after);
-		      const response = await api.settings.mutate({ ...mutation, expectedRevision: revisionAtExecution });
-		      if (!response.result.ok) throw new Error(response.result.error.message);
+		      const response = await api.settings.mutate(mutation.ns, mutation.ops, revisionAtExecution);
+		      if (!response.ok) {
+		        if (response.error.code === REMOTE_SETTINGS_CONFLICT_CODE) {
+		          await performRefresh();
+		          throw new Error(`settings conflict: ${response.error.message}`);
+		        }
+		        throw new Error(response.error.message);
+		      }
 		      await performRefresh();
 		      return controller.getSnapshot();
 		    })
@@ -216,7 +225,9 @@ window.__ModuleLoader__.load({
 		    profiles: [],
 		    selectedIds: [],
 		    results: [],
-		    error: null
+		    error: null,
+		    source: void 0,
+		    probedPath: void 0
 		  };
 		  const listeners = /* @__PURE__ */ new Set();
 		  const publish = (next) => {
@@ -249,13 +260,33 @@ window.__ModuleLoader__.load({
 		      else selected.add(profileId);
 		      controller.setSelectedIds([...selected]);
 		    },
+		    selectAll: () => {
+		      controller.setSelectedIds(snapshot.profiles.filter(importable).map((profile) => profile.profileId));
+		    },
+		    selectNone: () => {
+		      controller.setSelectedIds([]);
+		    },
+		    toggleSelectAll: () => {
+		      const importableIds = snapshot.profiles.filter(importable).map((profile) => profile.profileId);
+		      const allSelected = importableIds.length > 0 && importableIds.every((id) => snapshot.selectedIds.includes(id));
+		      if (allSelected) controller.selectNone();
+		      else controller.selectAll();
+		    },
 		    scan: async () => {
 		      publish({ ...snapshot, phase: "loading", error: null });
 		      try {
 		        const body = await request("/api/dsh-ccswitch/scan");
 		        const profiles = Array.isArray(body.profiles) ? body.profiles : [];
 		        const selectedIds = profiles.filter(importable).map((profile) => profile.profileId);
-		        publish({ phase: "ready", profiles, selectedIds, results: [], error: null });
+		        publish({
+		          phase: "ready",
+		          profiles,
+		          selectedIds,
+		          results: [],
+		          error: null,
+		          source: typeof body.source === "string" ? body.source : void 0,
+		          probedPath: typeof body.probedPath === "string" ? body.probedPath : void 0
+		        });
 		        return snapshot;
 		      } catch (error) {
 		        publish({ ...snapshot, phase: "error", error: error instanceof Error ? error.message : String(error) });
@@ -283,20 +314,125 @@ window.__ModuleLoader__.load({
 		  return controller;
 		}
 
+		// src/client/messages.mjs
+		var MESSAGES = {
+		  zh: {
+		    nav: "\u6A21\u578B\u63A8\u7406",
+		    "importer.title": "CCSwitch \u5BFC\u5165",
+		    "importer.hintExpanded": "\u4ECE\u672C\u673A CCSwitch \u8BFB\u53D6 provider \u914D\u7F6E\u3002",
+		    "importer.hintCollapsed": "\u70B9\u51FB\u5C55\u5F00 CCSwitch \u5BFC\u5165\u8BBE\u7F6E",
+		    "importer.collapseAria": "\u5C55\u5F00\u6216\u6536\u8D77 CCSwitch \u5BFC\u5165\u9762\u677F",
+		    "importer.scan": "\u626B\u63CF",
+		    "importer.scanning": "\u5904\u7406\u4E2D\u2026",
+		    "importer.importSelected": "\u5BFC\u5165\u9009\u4E2D",
+		    "importer.selectAll": "\u5168\u9009",
+		    "importer.selectNone": "\u53D6\u6D88\u5168\u9009",
+		    "importer.selectedCount": "\u5DF2\u9009 {selected} / {total} \u4E2A\u53EF\u5BFC\u5165",
+		    "importer.pendingKey": "\u5F85\u751F\u6210 provider key",
+		    "importer.credentialFound": "\u51ED\u636E\u5DF2\u627E\u5230",
+		    "importer.credentialMissing": "\u7F3A\u5C11\u51ED\u636E",
+		    "importer.noModels": "\u65E0\u6A21\u578B",
+		    "importer.empty": "\u6CA1\u6709\u53EF\u8BFB\u53D6\u7684 CCSwitch provider\u3002",
+		    "importer.emptyNotInstalled": "\u672A\u68C0\u6D4B\u5230 CC Switch \u6570\u636E\u5E93\uFF08\u5DF2\u67E5\u627E {path}\uFF09\u3002",
+		    "importer.emptyNoProfiles": "CC Switch \u6570\u636E\u5E93\u4E2D\u6CA1\u6709\u53EF\u5BFC\u5165\u7684 provider\u3002",
+		    "importer.emptyUnreadable": "CC Switch \u6570\u636E\u5E93\u65E0\u6CD5\u8BFB\u53D6\uFF08\u8868\u7ED3\u6784\u5F02\u5E38\u6216\u6587\u4EF6\u635F\u574F\uFF09\u3002",
+		    "importer.emptyUnsupportedNode": "\u5F53\u524D Node \u7248\u672C\u65E0\u6CD5\u52A0\u8F7D node:sqlite\uFF0C\u56E0\u6B64\u8BFB\u4E0D\u5230 CC Switch \u6570\u636E\u5E93\u3002",
+		    "importer.status.new": "\u5F85\u5BFC\u5165",
+		    "importer.status.update": "\u5C06\u66F4\u65B0",
+		    "importer.status.unchanged": "\u65E0\u9700\u66F4\u65B0",
+		    "importer.status.blocked": "\u5DF2\u963B\u6B62",
+		    "reasoning.title": "\u6A21\u578B\u63A8\u7406",
+		    "reasoning.intro": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\u3002",
+		    "reasoning.hintExpanded": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\uFF1B\u4FDD\u5B58\u540E\u5373\u53EF\u5728\u6A21\u578B\u9009\u62E9\u5668\u4E2D\u5207\u6362\u3002",
+		    "reasoning.hintCollapsed": "\u70B9\u51FB\u5C55\u5F00\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E",
+		    "reasoning.loading": "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E\u2026",
+		    "reasoning.empty": "\u6682\u65E0\u81EA\u5B9A\u4E49 provider \u6A21\u578B\u3002",
+		    "reasoning.modelCount": "{count} \u4E2A\u6A21\u578B",
+		    "reasoning.mode": "\u63A8\u7406\u6A21\u5F0F",
+		    "reasoning.modeDisabled": "\u5173\u95ED",
+		    "reasoning.modeEnabled": "\u542F\u7528",
+		    "reasoning.modeAria": "{model} \u63A8\u7406\u6A21\u5F0F",
+		    "reasoning.expand": "\u5C55\u5F00",
+		    "reasoning.collapse": "\u6536\u8D77",
+		    "reasoning.collapseAria": "{action} {model} \u63A8\u7406\u8BBE\u7F6E",
+		    "reasoning.levelsAria": "{model} \u53EF\u7528\u63A8\u7406\u7B49\u7EA7",
+		    "reasoning.levelsHeading": "\u53EF\u7528\u7B49\u7EA7",
+		    "reasoning.levelsSelected": "\u5DF2\u9009 {count} \u9879",
+		    "reasoning.customShow": "\u81EA\u5B9A\u4E49 wire \u503C",
+		    "reasoning.customHide": "\u6536\u8D77\u81EA\u5B9A\u4E49\u6620\u5C04",
+		    "reasoning.customNullPlaceholder": "\u7559\u7A7A\u8868\u793A null",
+		    "reasoning.customWireAria": "{model} {level} wire \u503C",
+		    "reasoning.remoteUpdated": "\u8FDC\u7AEF\u5DF2\u66F4\u65B0",
+		    "reasoning.reload": "\u91CD\u65B0\u8F7D\u5165",
+		    "reasoning.save": "\u4FDD\u5B58",
+		    "reasoning.saving": "\u4FDD\u5B58\u4E2D\u2026",
+		    "reasoning.saved": "\u5DF2\u4FDD\u5B58",
+		    "reasoning.savedDirty": "\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u4ECD\u6709\u672A\u4FDD\u5B58\u7684\u6539\u52A8",
+		    "reasoning.saveFailed": "\u4FDD\u5B58\u5931\u8D25\uFF1A{message}"
+		  },
+		  en: {
+		    nav: "Model reasoning",
+		    "importer.title": "CCSwitch import",
+		    "importer.hintExpanded": "Read provider configuration from the local CCSwitch installation.",
+		    "importer.hintCollapsed": "Click to expand the CCSwitch import settings",
+		    "importer.collapseAria": "Expand or collapse the CCSwitch import panel",
+		    "importer.scan": "Scan",
+		    "importer.scanning": "Working\u2026",
+		    "importer.importSelected": "Import selected",
+		    "importer.selectAll": "Select all",
+		    "importer.selectNone": "Clear selection",
+		    "importer.selectedCount": "{selected} of {total} importable selected",
+		    "importer.pendingKey": "provider key pending",
+		    "importer.credentialFound": "credential found",
+		    "importer.credentialMissing": "credential missing",
+		    "importer.noModels": "no models",
+		    "importer.empty": "No readable CCSwitch providers.",
+		    "importer.emptyNotInstalled": "No CC Switch database found (looked in {path}).",
+		    "importer.emptyNoProfiles": "The CC Switch database has no importable providers.",
+		    "importer.emptyUnreadable": "The CC Switch database could not be read (unexpected schema or corrupt file).",
+		    "importer.emptyUnsupportedNode": "This Node version cannot load node:sqlite, so the CC Switch database cannot be read.",
+		    "importer.status.new": "ready",
+		    "importer.status.update": "will update",
+		    "importer.status.unchanged": "up to date",
+		    "importer.status.blocked": "blocked",
+		    "reasoning.title": "Model reasoning",
+		    "reasoning.intro": "Configure reasoning levels for every model of your custom providers.",
+		    "reasoning.hintExpanded": "Configure reasoning levels per model; they become selectable in the model picker after saving.",
+		    "reasoning.hintCollapsed": "Click to expand the model reasoning settings",
+		    "reasoning.loading": "Loading model reasoning settings\u2026",
+		    "reasoning.empty": "No custom provider models yet.",
+		    "reasoning.modelCount": "{count} models",
+		    "reasoning.mode": "Reasoning mode",
+		    "reasoning.modeDisabled": "Off",
+		    "reasoning.modeEnabled": "On",
+		    "reasoning.modeAria": "Reasoning mode for {model}",
+		    "reasoning.expand": "Expand",
+		    "reasoning.collapse": "Collapse",
+		    "reasoning.collapseAria": "{action} reasoning settings for {model}",
+		    "reasoning.levelsAria": "Available reasoning levels for {model}",
+		    "reasoning.levelsHeading": "Available levels",
+		    "reasoning.levelsSelected": "{count} selected",
+		    "reasoning.customShow": "Custom wire values",
+		    "reasoning.customHide": "Hide custom mapping",
+		    "reasoning.customNullPlaceholder": "empty means null",
+		    "reasoning.customWireAria": "{model} {level} wire value",
+		    "reasoning.remoteUpdated": "updated on the remote",
+		    "reasoning.reload": "Reload",
+		    "reasoning.save": "Save",
+		    "reasoning.saving": "Saving\u2026",
+		    "reasoning.saved": "Saved",
+		    "reasoning.savedDirty": "Saved, but newer edits are still unsaved",
+		    "reasoning.saveFailed": "Save failed: {message}"
+		  }
+		};
+
 		// src/client/registration.mjs
-		var SETTINGS_SECTION_ID = "models";
+		var MODELS_FOOTER_SLOT = "settings.models.footer";
 		function registerReasoningSettings(ctx, { controller, importer, component, t }) {
-		  ctx.locale?.register?.("dsh-ccswitch-importer", {
-		    zh: { nav: "\u6A21\u578B\u63A8\u7406" },
-		    en: { nav: "Model reasoning" }
-		  });
-		  ctx.slots.inject("settings.section", () => ctx.slots.register({
-		    name: "settings.section",
-		    id: SETTINGS_SECTION_ID,
-		    // Negative priority shadows the built-in Models section when the settings
-		    // shell renders content, while ctx.slots.entries still exposes that
-		    // built-in entry so the composite can render it in place.
-		    priority: -1,
+		  ctx.locale?.register?.("dsh-ccswitch-importer-plus", MESSAGES);
+		  ctx.slots.inject(MODELS_FOOTER_SLOT, () => ctx.slots.register({
+		    name: MODELS_FOOTER_SLOT,
+		    id: "ccswitch-importer",
 		    order: 10,
 		    inject: () => ({ controller, importer, slots: ctx.slots, t })
 		  }, component));
@@ -322,16 +458,13 @@ window.__ModuleLoader__.load({
 		    listen("llm/adapters-updated", () => {
 		      void controller.refresh();
 		    }),
-		    listen("credentials/updated", refreshImporter),
-		    listen("credentials/reference-updated", refreshImporter),
-		    listen("connection/reset", () => {
-		      void controller.refresh();
-		    })
+		    listen("credentials/record-updated", refreshImporter),
+		    listen("credentials/reference-updated", refreshImporter)
 		  ];
 		  return () => disposers.forEach((dispose) => dispose());
 		}
 
-		// src/ui/ModelsReasoningComposite.mjs
+		// src/ui/ModelsFooterPanel.mjs
 		var import_react3 = __toESM(require("react"), 1);
 
 		// src/ui/ReasoningSettingsSection.mjs
@@ -373,7 +506,7 @@ window.__ModuleLoader__.load({
 		}
 
 		// src/ui/collapse-state.mjs
-		var COLLAPSE_KEY = "dsh-ccswitch-importer:collapse:v1";
+		var COLLAPSE_KEY = "dsh-ccswitch-importer-plus:collapse:v1";
 		var EMPTY = Object.freeze({
 		  reasoningPanel: false,
 		  importPanel: false,
@@ -447,20 +580,40 @@ window.__ModuleLoader__.load({
 		  }
 		}
 
+		// src/client/i18n.mjs
+		function makeTranslator(t) {
+		  return function translate(key, fallback, params) {
+		    let template;
+		    try {
+		      template = typeof t === "function" ? t(key) : void 0;
+		    } catch {
+		      template = void 0;
+		    }
+		    if (typeof template !== "string" || template.length === 0) template = fallback;
+		    if (typeof template !== "string" || template.length === 0) return key;
+		    if (!params) return template;
+		    return template.replace(/\{(\w+)\}/g, (match, name2) => Object.hasOwn(params, name2) ? String(params[name2]) : match);
+		  };
+		}
+
 		// src/ui/ReasoningSettingsSection.mjs
 		var h = import_react.default.createElement;
-		function displayStatus(status) {
-		  if (status === "saving") return "\u4FDD\u5B58\u4E2D\u2026";
-		  if (status === "saved") return "\u5DF2\u4FDD\u5B58";
-		  return status;
+		var STATUS_SAVED_DIRTY = "saved-dirty";
+		function displayStatus(status, tr, rawError) {
+		  if (status === "saving") return tr("reasoning.saving", "\u4FDD\u5B58\u4E2D\u2026");
+		  if (status === "saved") return tr("reasoning.saved", "\u5DF2\u4FDD\u5B58");
+		  if (status === STATUS_SAVED_DIRTY) return tr("reasoning.savedDirty", "\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u4ECD\u6709\u672A\u4FDD\u5B58\u7684\u6539\u52A8");
+		  if (!status) return "";
+		  return tr("reasoning.saveFailed", "\u4FDD\u5B58\u5931\u8D25\uFF1A{message}", { message: rawError ?? status });
 		}
-		function ModelEditor({ route, model, controller, writable, revision, collapsed = false, onToggleCollapsed }) {
+		function ModelEditor({ route, model, controller, writable, revision, collapsed = false, onToggleCollapsed, tr }) {
 		  const initial = draftForModel(model);
 		  const [draft, setDraft] = (0, import_react.useState)(initial);
 		  const [baseline, setBaseline] = (0, import_react.useState)(initial);
 		  const [baselineRevision, setBaselineRevision] = (0, import_react.useState)(revision);
 		  const [remoteChanged, setRemoteChanged] = (0, import_react.useState)(false);
 		  const [status, setStatus] = (0, import_react.useState)("");
+		  const [saveError, setSaveError] = (0, import_react.useState)("");
 		  const [customOpen, setCustomOpen] = (0, import_react.useState)(false);
 		  const draftRef = (0, import_react.useRef)(draft);
 		  const baselineRef = (0, import_react.useRef)(baseline);
@@ -516,6 +669,7 @@ window.__ModuleLoader__.load({
 		    const remoteModel = remoteSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
 		    applyReconciledState(reloadDraft({ remoteModel, remoteRevision: remoteSnapshot.revision }));
 		    setStatus("");
+		    setSaveError("");
 		  };
 		  const save = async () => {
 		    if (saveInFlightRef.current) return;
@@ -524,17 +678,20 @@ window.__ModuleLoader__.load({
 		    const savingSignature = draftSignature(draftToSave);
 		    const savingRevision = baselineRevisionRef.current;
 		    setStatus("saving");
+		    setSaveError("");
 		    try {
 		      const nextSnapshot = await controller.save(route, model.id, draftToSave.mode, draftToSave.efforts, savingRevision);
 		      const savedModel = nextSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
 		      if (draftSignature(draftRef.current) === savingSignature) {
 		        applyReconciledState(reloadDraft({ remoteModel: savedModel, remoteRevision: nextSnapshot.revision }));
+		        setStatus("saved");
 		      } else {
 		        applyReconciledState(rebaseDraft({ draft: draftRef.current, savedModel, savedRevision: nextSnapshot.revision }));
+		        setStatus(STATUS_SAVED_DIRTY);
 		      }
-		      setStatus("saved");
 		    } catch (error) {
-		      setStatus(error instanceof Error ? error.message : String(error));
+		      setSaveError(error instanceof Error ? error.message : String(error));
+		      setStatus("error");
 		    } finally {
 		      saveInFlightRef.current = false;
 		    }
@@ -542,7 +699,7 @@ window.__ModuleLoader__.load({
 		  const modelName = model.name || model.id;
 		  const selectedCount = Object.keys(draft.efforts).length;
 		  const customBodyId = ("dsh-reasoning-custom-" + route + "-" + model.id).replace(/[^a-zA-Z0-9_-]/g, "-");
-		  const statusClass = status === "saving" ? "dsh-reasoning-status dsh-reasoning-status--saving" : status === "saved" ? "dsh-reasoning-status dsh-reasoning-status--success" : status ? "dsh-reasoning-status dsh-reasoning-status--error" : "dsh-reasoning-status";
+		  const statusClass = status === "saving" ? "dsh-reasoning-status dsh-reasoning-status--saving" : status === "saved" ? "dsh-reasoning-status dsh-reasoning-status--success" : status === STATUS_SAVED_DIRTY ? "dsh-reasoning-status dsh-reasoning-status--dirty" : status ? "dsh-reasoning-status dsh-reasoning-status--error" : "dsh-reasoning-status";
 		  return h(
 		    "article",
 		    { className: "dsh-reasoning-model" + (collapsed ? " dsh-reasoning-model--collapsed" : "") },
@@ -558,24 +715,24 @@ window.__ModuleLoader__.load({
 		      h(
 		        "div",
 		        { className: "dsh-reasoning-model__mode-area" },
-		        h("span", { className: "dsh-reasoning-model__mode-label" }, "\u63A8\u7406\u6A21\u5F0F"),
+		        h("span", { className: "dsh-reasoning-model__mode-label" }, tr("reasoning.mode", "\u63A8\u7406\u6A21\u5F0F")),
 		        h(
 		          "div",
-		          { className: "dsh-reasoning-mode", role: "group", "aria-label": model.id + " \u63A8\u7406\u6A21\u5F0F" },
+		          { className: "dsh-reasoning-mode", role: "group", "aria-label": tr("reasoning.modeAria", "{model} \u63A8\u7406\u6A21\u5F0F", { model: model.id }) },
 		          h("button", {
 		            type: "button",
 		            className: draft.mode === "disabled" ? "dsh-reasoning-mode__option dsh-reasoning-mode__option--active" : "dsh-reasoning-mode__option",
 		            "aria-pressed": draft.mode === "disabled",
 		            disabled: !writable,
 		            onClick: () => setMode("disabled")
-		          }, "\u5173\u95ED"),
+		          }, tr("reasoning.modeDisabled", "\u5173\u95ED")),
 		          h("button", {
 		            type: "button",
 		            className: draft.mode === "enabled" ? "dsh-reasoning-mode__option dsh-reasoning-mode__option--active" : "dsh-reasoning-mode__option",
 		            "aria-pressed": draft.mode === "enabled",
 		            disabled: !writable,
 		            onClick: () => setMode("enabled")
-		          }, "\u542F\u7528")
+		          }, tr("reasoning.modeEnabled", "\u542F\u7528"))
 		        )
 		      ),
 		      h("button", {
@@ -583,7 +740,10 @@ window.__ModuleLoader__.load({
 		        className: "dsh-reasoning-collapse",
 		        "aria-expanded": !collapsed,
 		        "aria-controls": "dsh-reasoning-model-body-" + customBodyId,
-		        "aria-label": (collapsed ? "\u5C55\u5F00" : "\u6536\u8D77") + " " + modelName + " \u63A8\u7406\u8BBE\u7F6E",
+		        "aria-label": tr("reasoning.collapseAria", "{action} {model} \u63A8\u7406\u8BBE\u7F6E", {
+		          action: collapsed ? tr("reasoning.expand", "\u5C55\u5F00") : tr("reasoning.collapse", "\u6536\u8D77"),
+		          model: modelName
+		        }),
 		        onClick: () => onToggleCollapsed?.(route, model.id, !collapsed)
 		      }, h("span", { "aria-hidden": "true" }, collapsed ? "\u2304" : "\u2303"))
 		    ),
@@ -592,12 +752,12 @@ window.__ModuleLoader__.load({
 		      { id: "dsh-reasoning-model-body-" + customBodyId, className: "dsh-reasoning-model__body", hidden: collapsed || draft.mode !== "enabled" },
 		      h(
 		        "div",
-		        { className: "dsh-reasoning-levels", "aria-label": model.id + " \u53EF\u7528\u63A8\u7406\u7B49\u7EA7" },
+		        { className: "dsh-reasoning-levels", "aria-label": tr("reasoning.levelsAria", "{model} \u53EF\u7528\u63A8\u7406\u7B49\u7EA7", { model: model.id }) },
 		        h(
 		          "div",
 		          { className: "dsh-reasoning-levels__heading" },
-		          h("span", { className: "dsh-reasoning-levels__label" }, "\u53EF\u7528\u7B49\u7EA7"),
-		          h("span", { className: "dsh-reasoning-levels__summary" }, "\u5DF2\u9009 " + selectedCount + " \u9879")
+		          h("span", { className: "dsh-reasoning-levels__label" }, tr("reasoning.levelsHeading", "\u53EF\u7528\u7B49\u7EA7")),
+		          h("span", { className: "dsh-reasoning-levels__summary" }, tr("reasoning.levelsSelected", "\u5DF2\u9009 {count} \u9879", { count: selectedCount }))
 		        ),
 		        h(
 		          "div",
@@ -630,7 +790,7 @@ window.__ModuleLoader__.load({
 		            "aria-controls": customBodyId,
 		            onClick: () => setCustomOpen((current) => !current)
 		          },
-		          h("span", null, customOpen ? "\u6536\u8D77\u81EA\u5B9A\u4E49\u6620\u5C04" : "\u81EA\u5B9A\u4E49 wire \u503C"),
+		          h("span", null, customOpen ? tr("reasoning.customHide", "\u6536\u8D77\u81EA\u5B9A\u4E49\u6620\u5C04") : tr("reasoning.customShow", "\u81EA\u5B9A\u4E49 wire \u503C")),
 		          h("span", { "aria-hidden": "true" }, customOpen ? "\u2303" : "\u2304")
 		        ),
 		        customOpen && h(
@@ -643,10 +803,10 @@ window.__ModuleLoader__.load({
 		            h("input", {
 		              type: "text",
 		              value: draft.efforts[level] ?? "",
-		              placeholder: level === "off" ? "\u7559\u7A7A\u8868\u793A null" : level,
+		              placeholder: level === "off" ? tr("reasoning.customNullPlaceholder", "\u7559\u7A7A\u8868\u793A null") : level,
 		              disabled: !writable,
 		              onChange: (event) => setDraft((current) => ({ ...current, efforts: { ...current.efforts, [level]: event.target.value } })),
-		              "aria-label": model.id + " " + level + " wire \u503C"
+		              "aria-label": tr("reasoning.customWireAria", "{model} {level} wire \u503C", { model: model.id, level })
 		            })
 		          ))
 		        )
@@ -655,14 +815,14 @@ window.__ModuleLoader__.load({
 		    !collapsed && h(
 		      "footer",
 		      { className: "dsh-reasoning-model__footer" },
-		      h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? "\u8FDC\u7AEF\u5DF2\u66F4\u65B0" : ""),
-		      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, "\u91CD\u65B0\u8F7D\u5165"),
-		      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status)),
-		      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? "\u4FDD\u5B58\u4E2D\u2026" : "\u4FDD\u5B58")
+		      h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? tr("reasoning.remoteUpdated", "\u8FDC\u7AEF\u5DF2\u66F4\u65B0") : ""),
+		      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, tr("reasoning.reload", "\u91CD\u65B0\u8F7D\u5165")),
+		      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status, tr, saveError)),
+		      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? tr("reasoning.saving", "\u4FDD\u5B58\u4E2D\u2026") : tr("reasoning.save", "\u4FDD\u5B58"))
 		    )
 		  );
 		}
-		function renderProvider([route, provider], controller, writable, revision, collapse, onToggleCollapsed) {
+		function renderProvider([route, provider], controller, writable, revision, collapse, onToggleCollapsed, tr) {
 		  return h(
 		    "section",
 		    { key: route, className: "dsh-reasoning-provider" },
@@ -670,7 +830,7 @@ window.__ModuleLoader__.load({
 		      "div",
 		      { className: "dsh-reasoning-provider__header" },
 		      h("h3", null, route),
-		      h("span", null, provider.models.length + " \u4E2A\u6A21\u578B")
+		      h("span", null, tr("reasoning.modelCount", "{count} \u4E2A\u6A21\u578B", { count: provider.models.length }))
 		    ),
 		    h(
 		      "div",
@@ -683,12 +843,14 @@ window.__ModuleLoader__.load({
 		        writable,
 		        revision,
 		        collapsed: isModelCollapsed(collapse, route, model.id),
-		        onToggleCollapsed
+		        onToggleCollapsed,
+		        tr
 		      }))
 		    )
 		  );
 		}
-		function ReasoningSettingsSection({ controller, embedded = false, collapse: collapseProp, setCollapse: setCollapseProp }) {
+		function ReasoningSettingsSection({ controller, embedded = false, collapse: collapseProp, setCollapse: setCollapseProp, t }) {
+		  const tr = makeTranslator(t);
 		  const snapshot = (0, import_react.useSyncExternalStore)(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
 		  const providers = Object.entries(snapshot.providers).filter(([, provider]) => Array.isArray(provider?.models));
 		  const [localCollapse, setLocalCollapse] = (0, import_react.useState)(() => loadCollapse());
@@ -704,7 +866,7 @@ window.__ModuleLoader__.load({
 		  (0, import_react.useEffect)(() => {
 		    if (snapshot.status === "idle") void controller.refresh();
 		  }, [controller, snapshot.status]);
-		  if (snapshot.status === "loading" && providers.length === 0) return h("p", null, "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E\u2026");
+		  if (snapshot.status === "loading" && providers.length === 0) return h("p", null, tr("reasoning.loading", "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E\u2026"));
 		  if (snapshot.status === "error") return h("p", { role: "alert" }, snapshot.error);
 		  return h(
 		    "section",
@@ -712,10 +874,10 @@ window.__ModuleLoader__.load({
 		    !embedded && h(
 		      "header",
 		      null,
-		      h("h2", null, "\u6A21\u578B\u63A8\u7406"),
-		      h("p", null, "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\u3002")
+		      h("h2", null, tr("reasoning.title", "\u6A21\u578B\u63A8\u7406")),
+		      h("p", null, tr("reasoning.intro", "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\u3002"))
 		    ),
-		    providers.length === 0 ? h("p", null, "\u6682\u65E0\u81EA\u5B9A\u4E49 provider \u6A21\u578B\u3002") : providers.map((entry) => renderProvider(entry, controller, snapshot.writable, snapshot.revision, collapse, toggleModelCollapsed))
+		    providers.length === 0 ? h("p", null, tr("reasoning.empty", "\u6682\u65E0\u81EA\u5B9A\u4E49 provider \u6A21\u578B\u3002")) : providers.map((entry) => renderProvider(entry, controller, snapshot.writable, snapshot.revision, collapse, toggleModelCollapsed, tr))
 		  );
 		}
 
@@ -725,18 +887,39 @@ window.__ModuleLoader__.load({
 		function isSelectable(profile) {
 		  return profile.status !== "blocked" && profile.credential === "found";
 		}
-		function statusLabel(status) {
-		  if (status === "new") return "\u5F85\u5BFC\u5165";
-		  if (status === "update") return "\u5C06\u66F4\u65B0";
-		  if (status === "unchanged") return "\u65E0\u9700\u66F4\u65B0";
-		  if (status === "blocked") return "\u5DF2\u963B\u6B62";
-		  return status ?? "";
+		function statusKey(status) {
+		  if (status === "new") return "importer.status.new";
+		  if (status === "update") return "importer.status.update";
+		  if (status === "unchanged") return "importer.status.unchanged";
+		  if (status === "blocked") return "importer.status.blocked";
+		  return void 0;
+		}
+		function statusLabel(status, tr) {
+		  const key = statusKey(status);
+		  return key ? tr(key, status) : status ?? "";
 		}
 		function badgeClass(status) {
 		  const safe = status === "new" || status === "update" || status === "unchanged" || status === "blocked" ? status : "unchanged";
 		  return `dsh-ccswitch-import__badge dsh-ccswitch-import__badge--${safe}`;
 		}
-		function CCSwitchImportSection({ controller, collapse, setCollapse }) {
+		function emptyMessage(snapshot, tr) {
+		  const probed = snapshot.probedPath || "~/.cc-switch/cc-switch.db";
+		  if (snapshot.source === "not-installed") {
+		    return tr("importer.emptyNotInstalled", "\u672A\u68C0\u6D4B\u5230 CC Switch \u6570\u636E\u5E93\uFF08\u5DF2\u67E5\u627E {path}\uFF09\u3002", { path: probed });
+		  }
+		  if (snapshot.source === "no-profiles") {
+		    return tr("importer.emptyNoProfiles", "CC Switch \u6570\u636E\u5E93\u4E2D\u6CA1\u6709\u53EF\u5BFC\u5165\u7684 provider\u3002");
+		  }
+		  if (snapshot.source === "unreadable") {
+		    return tr("importer.emptyUnreadable", "CC Switch \u6570\u636E\u5E93\u65E0\u6CD5\u8BFB\u53D6\uFF08\u8868\u7ED3\u6784\u5F02\u5E38\u6216\u6587\u4EF6\u635F\u574F\uFF09\u3002");
+		  }
+		  if (snapshot.source === "unsupported-node") {
+		    return tr("importer.emptyUnsupportedNode", "\u5F53\u524D Node \u7248\u672C\u65E0\u6CD5\u52A0\u8F7D node:sqlite\uFF0C\u56E0\u6B64\u8BFB\u4E0D\u5230 CC Switch \u6570\u636E\u5E93\u3002");
+		  }
+		  return tr("importer.empty", "\u6CA1\u6709\u53EF\u8BFB\u53D6\u7684 CCSwitch provider\u3002");
+		}
+		function CCSwitchImportSection({ controller, collapse, setCollapse, t }) {
+		  const tr = makeTranslator(t);
 		  if (!controller) return null;
 		  const snapshot = (0, import_react2.useSyncExternalStore)(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
 		  (0, import_react2.useEffect)(() => {
@@ -746,6 +929,9 @@ window.__ModuleLoader__.load({
 		  const busy = snapshot.phase === "loading" || snapshot.phase === "importing";
 		  const selected = new Set(snapshot.selectedIds);
 		  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
+		  const importableIds = profiles.filter(isSelectable).map((profile) => profile.profileId);
+		  const selectedCount = importableIds.filter((id) => selected.has(id)).length;
+		  const allSelected = importableIds.length > 0 && selectedCount === importableIds.length;
 		  const collapsed = collapse?.importPanel === true;
 		  const toggleCollapsed = () => {
 		    if (typeof setCollapse !== "function") return;
@@ -764,8 +950,8 @@ window.__ModuleLoader__.load({
 		      h2(
 		        "div",
 		        null,
-		        h2("h2", { id: "dsh-ccswitch-import-title", className: "dsh-ccswitch-import__title" }, "CCSwitch \u5BFC\u5165"),
-		        h2("p", { className: "dsh-ccswitch-import__hint" }, collapsed ? "\u70B9\u51FB\u5C55\u5F00 CCSwitch \u5BFC\u5165\u8BBE\u7F6E" : "\u4ECE\u672C\u673A CCSwitch \u8BFB\u53D6 provider \u914D\u7F6E\u3002")
+		        h2("h2", { id: "dsh-ccswitch-import-title", className: "dsh-ccswitch-import__title" }, tr("importer.title", "CCSwitch \u5BFC\u5165")),
+		        h2("p", { className: "dsh-ccswitch-import__hint" }, collapsed ? tr("importer.hintCollapsed", "\u70B9\u51FB\u5C55\u5F00 CCSwitch \u5BFC\u5165\u8BBE\u7F6E") : tr("importer.hintExpanded", "\u4ECE\u672C\u673A CCSwitch \u8BFB\u53D6 provider \u914D\u7F6E\u3002"))
 		      ),
 		      h2(
 		        "div",
@@ -775,6 +961,7 @@ window.__ModuleLoader__.load({
 		          className: "dsh-ccswitch-collapse",
 		          "aria-expanded": !collapsed,
 		          "aria-controls": "dsh-ccswitch-import-body",
+		          "aria-label": tr("importer.collapseAria", "\u5C55\u5F00\u6216\u6536\u8D77 CCSwitch \u5BFC\u5165\u9762\u677F"),
 		          onClick: toggleCollapsed
 		        }, h2("span", { "aria-hidden": "true" }, collapsed ? "\u2304" : "\u2303")),
 		        !collapsed && h2(
@@ -783,11 +970,11 @@ window.__ModuleLoader__.load({
 		          h2("button", { className: "dsh-ccswitch-import__secondary", type: "button", disabled: busy, onClick: () => {
 		            void controller.scan().catch(() => {
 		            });
-		          } }, busy ? "\u5904\u7406\u4E2D..." : "\u626B\u63CF"),
+		          } }, busy ? tr("importer.scanning", "\u5904\u7406\u4E2D\u2026") : tr("importer.scan", "\u626B\u63CF")),
 		          h2("button", { className: "dsh-ccswitch-import__primary", type: "button", disabled: busy || selected.size === 0, onClick: () => {
 		            void controller.importSelected().catch(() => {
 		            });
-		          } }, "\u5BFC\u5165\u9009\u4E2D")
+		          } }, tr("importer.importSelected", "\u5BFC\u5165\u9009\u4E2D"))
 		        )
 		      )
 		    ),
@@ -795,9 +982,32 @@ window.__ModuleLoader__.load({
 		      "div",
 		      { id: "dsh-ccswitch-import-body", className: "dsh-ccswitch-import__body", hidden: collapsed },
 		      snapshot.error && h2("p", { role: "alert", className: "dsh-ccswitch-import__error" }, snapshot.error),
-		      profiles.length === 0 && snapshot.phase !== "loading" ? h2("p", { className: "dsh-ccswitch-import__empty" }, "\u6CA1\u6709\u53EF\u8BFB\u53D6\u7684 CCSwitch provider\u3002") : h2(
+		      profiles.length === 0 && snapshot.phase !== "loading" ? h2("p", { className: "dsh-ccswitch-import__empty" }, emptyMessage(snapshot, tr)) : h2(
 		        "div",
 		        { className: "dsh-ccswitch-import__list" },
+		        h2(
+		          "label",
+		          { className: "dsh-ccswitch-import__row dsh-ccswitch-import__row--select-all" },
+		          h2("input", {
+		            type: "checkbox",
+		            checked: allSelected,
+		            ref: (el) => {
+		              if (el) el.indeterminate = selectedCount > 0 && !allSelected;
+		            },
+		            disabled: busy || importableIds.length === 0,
+		            onChange: () => controller.toggleSelectAll()
+		          }),
+		          h2(
+		            "span",
+		            { className: "dsh-ccswitch-import__content" },
+		            h2("strong", null, allSelected ? tr("importer.selectNone", "\u53D6\u6D88\u5168\u9009") : tr("importer.selectAll", "\u5168\u9009")),
+		            h2(
+		              "span",
+		              { className: "dsh-ccswitch-import__meta-line" },
+		              h2("span", null, tr("importer.selectedCount", "\u5DF2\u9009 {selected} / {total} \u4E2A\u53EF\u5BFC\u5165", { selected: selectedCount, total: importableIds.length }))
+		            )
+		          )
+		        ),
 		        ...profiles.map((profile) => {
 		          const selectable = isSelectable(profile);
 		          return h2(
@@ -824,12 +1034,12 @@ window.__ModuleLoader__.load({
 		              h2(
 		                "span",
 		                { className: "dsh-ccswitch-import__meta-line" },
-		                h2("code", { className: "dsh-ccswitch-import__provider-key" }, profile.providerKey || "\u5F85\u751F\u6210 provider key"),
-		                h2("span", null, `${profile.credential === "found" ? "\u51ED\u636E\u5DF2\u627E\u5230" : "\u7F3A\u5C11\u51ED\u636E"} \xB7 ${(profile.modelIds ?? []).join(", ") || "\u65E0\u6A21\u578B"}`),
+		                h2("code", { className: "dsh-ccswitch-import__provider-key" }, profile.providerKey || tr("importer.pendingKey", "\u5F85\u751F\u6210 provider key")),
+		                h2("span", null, `${profile.credential === "found" ? tr("importer.credentialFound", "\u51ED\u636E\u5DF2\u627E\u5230") : tr("importer.credentialMissing", "\u7F3A\u5C11\u51ED\u636E")} \xB7 ${(profile.modelIds ?? []).join(", ") || tr("importer.noModels", "\u65E0\u6A21\u578B")}`),
 		                Array.isArray(profile.warnings) && profile.warnings.length > 0 ? h2("span", { className: "dsh-ccswitch-import__warnings" }, profile.warnings.join("\uFF1B")) : null
 		              )
 		            ),
-		            h2("span", { className: badgeClass(profile.status) }, statusLabel(profile.status))
+		            h2("span", { className: badgeClass(profile.status) }, statusLabel(profile.status, tr))
 		          );
 		        })
 		      ),
@@ -839,22 +1049,17 @@ window.__ModuleLoader__.load({
 		        ...snapshot.results.map((result) => h2(
 		          "li",
 		          { key: `${result.profileId}-${result.status}` },
-		          `${result.profileId}: ${result.status === "failed" ? result.error : statusLabel(result.status)}`
+		          `${result.profileId}: ${result.status === "failed" ? result.error : statusLabel(result.status, tr)}`
 		        ))
 		      )
 		    )
 		  );
 		}
 
-		// src/ui/ModelsReasoningComposite.mjs
+		// src/ui/ModelsFooterPanel.mjs
 		var h3 = import_react3.default.createElement;
-		function ModelsReasoningComposite({ controller, importer, slots, t, close }) {
-		  const builtIn = slots.entries("settings.section").find((entry) => entry.options.id === "models" && entry.component !== ModelsReasoningComposite);
-		  let modelsPage = null;
-		  if (builtIn && typeof builtIn.component === "function") {
-		    const injected = typeof builtIn.inject === "function" ? builtIn.inject() : {};
-		    modelsPage = h3(builtIn.component, { ...injected, close });
-		  }
+		function ModelsFooterPanel({ controller, importer, t }) {
+		  const tr = makeTranslator(t);
 		  const [collapse, setCollapse] = (0, import_react3.useState)(() => loadCollapse());
 		  const reasoningCollapsed = collapse.reasoningPanel === true;
 		  const toggleReasoning = () => {
@@ -867,11 +1072,10 @@ window.__ModuleLoader__.load({
 		  return h3(
 		    "div",
 		    { className: "dsh-reasoning-composite" },
-		    modelsPage,
-		    h3(CCSwitchImportSection, { controller: importer, collapse, setCollapse }),
+		    h3(CCSwitchImportSection, { controller: importer, collapse, setCollapse, t }),
 		    h3(
 		      "section",
-		      { className: "dsh-reasoning-embed" + (reasoningCollapsed ? " dsh-reasoning-embed--collapsed" : ""), "aria-label": t?.("nav") ?? "Model reasoning" },
+		      { className: "dsh-reasoning-embed" + (reasoningCollapsed ? " dsh-reasoning-embed--collapsed" : ""), "aria-label": tr("nav", "Model reasoning") },
 		      h3(
 		        "button",
 		        {
@@ -881,25 +1085,21 @@ window.__ModuleLoader__.load({
 		          "aria-controls": "dsh-reasoning-embed-body",
 		          onClick: toggleReasoning
 		        },
-		        h3("span", { className: "dsh-reasoning-embed__title" }, t?.("nav") ?? "\u6A21\u578B\u63A8\u7406"),
-		        h3(
-		          "span",
-		          { className: "dsh-reasoning-embed__hint" },
-		          reasoningCollapsed ? "\u70B9\u51FB\u5C55\u5F00\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E" : "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\uFF1B\u4FDD\u5B58\u540E\u5373\u53EF\u5728\u6A21\u578B\u9009\u62E9\u5668\u4E2D\u5207\u6362\u3002"
-		        ),
+		        h3("span", { className: "dsh-reasoning-embed__title" }, tr("nav", "Model reasoning")),
+		        h3("span", { className: "dsh-reasoning-embed__hint" }, reasoningCollapsed ? tr("reasoning.hintCollapsed", "\u70B9\u51FB\u5C55\u5F00\u6A21\u578B\u63A8\u7406\u8BBE\u7F6E") : tr("reasoning.hintExpanded", "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\uFF1B\u4FDD\u5B58\u540E\u5373\u53EF\u5728\u6A21\u578B\u9009\u62E9\u5668\u4E2D\u5207\u6362\u3002")),
 		        h3("span", { className: "dsh-reasoning-embed__toggle-chevron", "aria-hidden": "true" }, reasoningCollapsed ? "\u2304" : "\u2303")
 		      ),
 		      h3(
 		        "div",
 		        { id: "dsh-reasoning-embed-body", hidden: reasoningCollapsed },
-		        h3(ReasoningSettingsSection, { controller, embedded: true, collapse, setCollapse })
+		        h3(ReasoningSettingsSection, { controller, embedded: true, collapse, setCollapse, t })
 		      )
 		    )
 		  );
 		}
 
 		// src/client/styles.mjs
-		var STYLE_ID = "dsh-ccswitch-importer-styles";
+		var STYLE_ID = "dsh-ccswitch-importer-plus-styles";
 		var CSS = `button[class*="navCell"]:has(span[class*="navLabel"]:empty){display:none;}
 		.dsh-reasoning-composite{display:flex;flex-direction:column;gap:20px;}
 		.dsh-reasoning-embed{border-top:1px solid var(--dsw-alias-border-l2);padding-top:16px;}
@@ -963,7 +1163,7 @@ window.__ModuleLoader__.load({
 		.dsh-ccswitch-import__secondary:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);}
 		.dsh-ccswitch-import__list{display:flex;flex-direction:column;gap:8px;}
 		.dsh-ccswitch-import__row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);}
-		.dsh-ccswitch-import__row--blocked{opacity:.55;}
+		.dsh-ccswitch-import__row--blocked{opacity:.55;}.dsh-ccswitch-import__row--select-all{border-style:dashed;background:transparent;}.dsh-ccswitch-import__row--select-all .dsh-ccswitch-import__meta-line span{white-space:normal;}
 		.dsh-ccswitch-import__content{display:flex;min-width:0;flex-direction:column;gap:2px;}
 		.dsh-ccswitch-import__primary-line{display:flex;align-items:baseline;gap:8px;min-width:0;}
 		.dsh-ccswitch-import__primary-line strong{flex:none;max-width:60%;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -981,6 +1181,7 @@ window.__ModuleLoader__.load({
 		.dsh-ccswitch-import__error{margin:0 0 12px;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;}
 		.dsh-ccswitch-import__results{margin:12px 0 0;padding-left:20px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;}
 		@media (max-width:640px){[role='dialog']:has(.dsh-ccswitch-import)>nav{flex:0 0 56px;width:56px;min-width:56px;}[role='dialog']:has(.dsh-ccswitch-import)>nav button{width:40px;min-width:40px;padding:0;justify-content:center;}[role='dialog']:has(.dsh-ccswitch-import)>nav button>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}[role='dialog']:has(.dsh-ccswitch-import)>div{min-width:0;}.dsh-ccswitch-import__header{flex-direction:column;}.dsh-ccswitch-import__header-actions{width:100%;justify-content:space-between;}.dsh-ccswitch-import__header-actions .dsh-ccswitch-import__actions{flex:1;}.dsh-ccswitch-import__actions{width:100%;flex-direction:column;align-items:stretch;}.dsh-ccswitch-import__actions button{width:100%;}.dsh-ccswitch-import__row{grid-template-columns:auto minmax(0,1fr);min-width:0;}.dsh-ccswitch-import__content{min-width:0;}.dsh-ccswitch-import__badge{grid-column:2;justify-self:start;}.dsh-reasoning-model__header{align-items:stretch;flex-direction:column;gap:10px;padding:10px;}.dsh-reasoning-model__mode-area{width:100%;justify-content:space-between;}.dsh-reasoning-model__body{padding:10px;}.dsh-reasoning-model__footer{padding:9px 10px;}.dsh-reasoning-levels__heading{align-items:flex-start;}.dsh-reasoning-levels__options{gap:6px;}.dsh-reasoning-custom__body{grid-template-columns:minmax(0,1fr);}}`;
+		var STATUS_CSS = ".dsh-reasoning-status--dirty{color:var(--dsw-alias-label-secondary);}\n";
 		function installEmbedStyles() {
 		  if (typeof document === "undefined") return () => {
 		  };
@@ -988,32 +1189,30 @@ window.__ModuleLoader__.load({
 		  };
 		  const style = document.createElement("style");
 		  style.id = STYLE_ID;
-		  style.textContent = CSS;
+		  style.textContent = CSS + STATUS_CSS;
 		  document.head.append(style);
 		  return () => style.remove();
 		}
 
 		// src/client/index.mjs
-		var name = "dsh-ccswitch-importer";
+		var name = "dsh-ccswitch-importer-plus";
 		var inject = [
 		  "slots",
 		  "locale",
-		  "connection",
 		  "remote"
 		];
 		function apply(ctx) {
-		  const connection = ctx.get("connection");
-		  const controller = createReasoningSettingsController(connection.api);
+		  const controller = createReasoningSettingsController(ctx.remote);
 		  const importer = createCCSwitchImportController({
 		    getRevision: () => controller.getSnapshot().revision,
 		    onImported: () => controller.refresh()
 		  });
-		  const t = ctx.locale.bind("dsh-ccswitch-importer");
+		  const t = ctx.locale.bind("dsh-ccswitch-importer-plus");
 		  const removeStyles = installEmbedStyles();
 		  const dispose = registerReasoningSettings(ctx, {
 		    controller,
 		    importer,
-		    component: ModelsReasoningComposite,
+		    component: ModelsFooterPanel,
 		    t
 		  });
 		  ctx.effect(() => {
@@ -1022,7 +1221,7 @@ window.__ModuleLoader__.load({
 		      dispose();
 		      removeStyles();
 		    };
-		  }, "dsh-ccswitch-importer.lifecycle");
+		  }, "dsh-ccswitch-importer-plus.lifecycle");
 		}
 		// Annotate the CommonJS export names for ESM import in node:
 		0 && (module.exports = {

@@ -1,3 +1,7 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { seedReasoning } from '../src/domain/import-reasoning.mjs'

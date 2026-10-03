@@ -1,14 +1,20 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createReasoningSettingsController } from '../src/client/controller.mjs'
 
+// 0.2.0 remote shape: calls resolve to { ok: true, value } | { ok: false, error }.
 const namespace = (revision, wire = 'low') => ({
-  result: { ok: true, value: {
+  ok: true,
+  value: {
     writable: true,
     namespaces: [{ ns: 'llm-pi-ai', revision, value: {
       providers: { route: { models: [{ id: 'model', reasoningEfforts: { low: wire } }] } },
     } }],
-  } },
+  },
 })
 
 test('save sends the editor baseline revision and returns refreshed snapshot', async () => {
@@ -17,11 +23,12 @@ test('save sends the editor baseline revision and returns refreshed snapshot', a
   const controller = createReasoningSettingsController({
     settings: {
       describe: async () => describes.shift(),
-      mutate: async (payload) => { mutations.push(payload); return { result: { ok: true } } },
+      mutate: async (ns, ops, expectedRevision) => { mutations.push({ ns, ops, expectedRevision }); return { ok: true } },
     },
   })
   await controller.refresh()
   const result = await controller.save('route', 'model', 'enabled', { low: 'custom-low' }, 2)
+  assert.equal(mutations[0].ns, 'llm-pi-ai')
   assert.equal(mutations[0].expectedRevision, 2)
   assert.equal(result.revision, 4)
   assert.equal(result.providers.route.models[0].reasoningEfforts.low, 'custom-low')
@@ -35,10 +42,10 @@ test('serializes saves so a later mutation waits for the earlier refresh', async
   const controller = createReasoningSettingsController({
     settings: {
       describe: async () => describes.shift(),
-      mutate: async (payload) => {
-        mutations.push(payload)
+      mutate: async (ns, ops, expectedRevision) => {
+        mutations.push({ ns, ops, expectedRevision })
         if (mutations.length === 1) await firstMutation
-        return { result: { ok: true } }
+        return { ok: true }
       },
     },
   })
@@ -50,4 +57,20 @@ test('serializes saves so a later mutation waits for the earlier refresh', async
   releaseFirst()
   await Promise.all([first, second])
   assert.deepEqual(mutations.map((entry) => entry.expectedRevision), [3, 4])
+})
+
+test('conflict response triggers a refresh and throws', async () => {
+  const describes = [namespace(3), namespace(9, 'remote-low')]
+  const controller = createReasoningSettingsController({
+    settings: {
+      describe: async () => describes.shift(),
+      mutate: async () => ({ ok: false, error: { code: 'settings/conflict', message: 'revision moved' } }),
+    },
+  })
+  await controller.refresh()
+  await assert.rejects(
+    () => controller.save('route', 'model', 'enabled', { low: 'x' }, 2),
+    /settings conflict/,
+  )
+  assert.equal(controller.getSnapshot().revision, 9)
 })

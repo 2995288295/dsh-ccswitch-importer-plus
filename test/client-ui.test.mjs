@@ -1,3 +1,7 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -86,6 +90,19 @@ test('reasoning pills and save status use unified badge styling', async () => {
   assert.match(styles, /\.dsh-reasoning-status\{[^}]*border-radius:999px/)
 })
 
+test('a save that left newer edits behind is not reported as fully saved', async () => {
+  const ui = await readFile(new URL('src/ui/ReasoningSettingsSection.mjs', root), 'utf8')
+  const styles = await readFile(new URL('src/client/styles.mjs', root), 'utf8')
+  assert.match(ui, /const STATUS_SAVED_DIRTY = "saved-dirty"/)
+  assert.match(ui, /setStatus\(STATUS_SAVED_DIRTY\)/)
+  assert.match(ui, /dsh-reasoning-status--dirty/)
+  assert.match(ui, /reasoning\.savedDirty/)
+  // Errors must be labelled as failures, not shown as a bare upstream string.
+  assert.match(ui, /setStatus\("error"\)/)
+  assert.match(ui, /reasoning\.saveFailed/)
+  assert.match(styles, /\.dsh-reasoning-status--dirty\{/)
+})
+
 test('importer keeps the settings content usable on narrow screens', async () => {
   const styles = await readFile(new URL('src/client/styles.mjs', root), 'utf8')
   assert.match(styles, /\[role='dialog'\]:has\(\.dsh-ccswitch-import\)>nav\{[^}]*width:56px/)
@@ -96,7 +113,7 @@ test('importer keeps the settings content usable on narrow screens', async () =>
 })
 
 test('all panels expose persistent collapse controls', async () => {
-  const composite = await readFile(new URL('src/ui/ModelsReasoningComposite.mjs', root), 'utf8')
+  const composite = await readFile(new URL('src/ui/ModelsFooterPanel.mjs', root), 'utf8')
   const importer = await readFile(new URL('src/ui/CCSwitchImportSection.mjs', root), 'utf8')
   const reasoning = await readFile(new URL('src/ui/ReasoningSettingsSection.mjs', root), 'utf8')
   const collapse = await readFile(new URL('src/ui/collapse-state.mjs', root), 'utf8')
@@ -106,7 +123,9 @@ test('all panels expose persistent collapse controls', async () => {
   assert.match(composite, /dsh-reasoning-embed__toggle/)
   assert.match(composite, /aria-expanded.*reasoningCollapsed/)
   assert.match(composite, /dsh-reasoning-embed-body/)
-  assert.ok(composite.includes('ReasoningSettingsSection, { controller, embedded: true, collapse, setCollapse }'))
+  assert.ok(composite.includes('ReasoningSettingsSection, { controller, embedded: true, collapse, setCollapse, t }'))
+  assert.ok(composite.includes('CCSwitchImportSection, { controller: importer, collapse, setCollapse, t }'))
+  assert.match(composite, /makeTranslator/)
   assert.match(composite, /hidden: reasoningCollapsed/)
   assert.match(importer, /saveCollapse\(next\)/)
   assert.match(importer, /dsh-ccswitch-collapse/)

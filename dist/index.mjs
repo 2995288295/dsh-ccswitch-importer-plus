@@ -96,9 +96,96 @@ function seedReasoning(modelId, rawEffort) {
   };
 }
 
+// src/domain/model-catalog.mjs
+var K = 1024;
+var EXACT_CATALOG = Object.freeze({
+  "gpt-5.1-codex": { contextWindow: 400 * K, maxTokens: 128 * K, input: ["text", "image"] },
+  "gpt-5.1-codex-mini": { contextWindow: 400 * K, maxTokens: 128 * K, input: ["text", "image"] },
+  "gpt-5.1": { contextWindow: 400 * K, maxTokens: 128 * K, input: ["text", "image"] },
+  "gpt-5": { contextWindow: 400 * K, maxTokens: 128 * K, input: ["text", "image"] },
+  "gpt-4.1": { contextWindow: 1024 * K, maxTokens: 32 * K, input: ["text", "image"] },
+  "gpt-4.1-mini": { contextWindow: 1024 * K, maxTokens: 32 * K, input: ["text", "image"] },
+  "gpt-4o": { contextWindow: 128 * K, maxTokens: 16 * K, input: ["text", "image"] },
+  "gpt-4o-mini": { contextWindow: 128 * K, maxTokens: 16 * K, input: ["text", "image"] },
+  "o1": { contextWindow: 200 * K, maxTokens: 100 * K, input: ["text", "image"] },
+  "o3": { contextWindow: 200 * K, maxTokens: 100 * K, input: ["text", "image"] },
+  "o4-mini": { contextWindow: 200 * K, maxTokens: 100 * K, input: ["text", "image"] },
+  "deepseek-v4.1-flash": { contextWindow: 160 * K, maxTokens: 64 * K, input: ["text"] },
+  "deepseek-chat": { contextWindow: 128 * K, maxTokens: 8 * K, input: ["text"] },
+  "deepseek-reasoner": { contextWindow: 128 * K, maxTokens: 64 * K, input: ["text"] },
+  "claude-opus-4-5": { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "claude-sonnet-4-5": { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "claude-haiku-4-5": { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "claude-opus-4-1": { contextWindow: 200 * K, maxTokens: 32 * K, input: ["text", "image"] },
+  "claude-sonnet-4": { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "claude-3-7-sonnet": { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "gemini-2.5-pro": { contextWindow: 1024 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "gemini-2.5-flash": { contextWindow: 1024 * K, maxTokens: 64 * K, input: ["text", "image"] },
+  "grok-4": { contextWindow: 256 * K, maxTokens: 64 * K, input: ["text"] },
+  "kimi-k2": { contextWindow: 256 * K, maxTokens: 8 * K, input: ["text"] },
+  "qwen3-max": { contextWindow: 256 * K, maxTokens: 32 * K, input: ["text"] }
+});
+var DEFAULT_CONTEXT_WINDOW = 128 * K;
+var DEFAULT_MAX_TOKENS = 8 * K;
+var THINKING_ID_PATTERN = /(?:^|[/_.-])(thinking|reasoner|reasoning|r1)(?:[/_.-]|$)/i;
+var THINKING_FAMILY_PATTERN = /^(o[134](-|$)|deepseek-reasoner)/i;
+function isKnownModel(modelId) {
+  return typeof modelId === "string" && EXACT_CATALOG[modelId.trim().toLowerCase()] !== void 0;
+}
+function catalogFieldsFor(modelId) {
+  if (typeof modelId !== "string") return void 0;
+  const key = modelId.trim().toLowerCase();
+  const exact = EXACT_CATALOG[key];
+  if (exact) return { ...exact };
+  if (/^gpt-5/.test(key)) return { contextWindow: 400 * K, maxTokens: 128 * K, input: ["text", "image"] };
+  if (/^gpt-4/.test(key)) return { contextWindow: 128 * K, maxTokens: 16 * K, input: ["text", "image"] };
+  if (/^claude-(opus|sonnet|haiku)/.test(key)) return { contextWindow: 200 * K, maxTokens: 64 * K, input: ["text", "image"] };
+  if (/^deepseek/.test(key)) return { contextWindow: 128 * K, maxTokens: 32 * K, input: ["text"] };
+  if (/^gemini-\d/.test(key)) return { contextWindow: 1024 * K, maxTokens: 64 * K, input: ["text", "image"] };
+  if (/^grok/.test(key)) return { contextWindow: 256 * K, maxTokens: 32 * K, input: ["text"] };
+  if (/^(kimi|qwen|glm)/.test(key)) return { contextWindow: 128 * K, maxTokens: 32 * K, input: ["text"] };
+  if (/^o[134]/.test(key)) return { contextWindow: 200 * K, maxTokens: 100 * K, input: ["text", "image"] };
+  return { contextWindow: DEFAULT_CONTEXT_WINDOW, maxTokens: DEFAULT_MAX_TOKENS, input: ["text"] };
+}
+function isThinkingModel(modelId) {
+  if (typeof modelId !== "string") return false;
+  const key = modelId.trim().toLowerCase();
+  return THINKING_ID_PATTERN.test(key) || THINKING_FAMILY_PATTERN.test(key);
+}
+
+// lib/core/json-equal.js
+function jsonEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, index) => jsonEqual(item, b[index]));
+  }
+  if (typeof a === "object" && a !== null && b !== null) {
+    const aKeys = Object.keys(a).filter((key) => a[key] !== void 0);
+    const bKeys = Object.keys(b).filter((key) => b[key] !== void 0);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every((key) => b[key] !== void 0 && jsonEqual(a[key], b[key]));
+  }
+  return false;
+}
+
 // lib/core/mapper.js
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function enrichModel(sourceModel, profile) {
+  const catalog = catalogFieldsFor(sourceModel.id);
+  const next = { ...catalog, ...sourceModel };
+  const thinking = sourceModel.fallbackThinking === true || isThinkingModel(sourceModel.id);
+  if (profile.api === "anthropic-messages" && thinking) {
+    const currentCompat = isObject(next.compat) ? next.compat : {};
+    if (currentCompat.forceAdaptiveThinking === void 0) {
+      next.compat = { ...currentCompat, forceAdaptiveThinking: true };
+    }
+  }
+  delete next.fallbackThinking;
+  return next;
 }
 function profileWarnings(profile, extra = []) {
   const modelId = profile.models?.find((model) => typeof model?.id === "string")?.id;
@@ -134,11 +221,17 @@ function toProviderProfile(profile, existing, providerKeyValue) {
   const resolvedKey = providerKeyValue ?? providerKey(profile.profileId, profile.profileName);
   const key = credentialRefForProviderKey(resolvedKey);
   const existingModels = Array.isArray(previous.models) ? previous.models : [];
-  const sourceModels = (profile.models ?? []).filter((model) => typeof model?.id === "string" && model.id.length > 0);
+  const sourceModels = (profile.models ?? []).map((model) => typeof model === "string" ? { id: model } : model).filter((model) => typeof model?.id === "string" && model.id.length > 0);
   const sourceIds = new Set(sourceModels.map((model) => model.id));
   const models = sourceModels.map((sourceModel) => {
     const current = existingModels.find((model) => model?.id === sourceModel.id);
-    const next = { ...isObject(current) ? current : {}, ...sourceModel };
+    const enriched = enrichModel(sourceModel, profile);
+    const { fallbackThinking: _flag, ...source } = sourceModel;
+    const next = { ...enriched, ...isObject(current) ? current : {}, ...source };
+    delete next.fallbackThinking;
+    if (isObject(enriched.compat) || isObject(next.compat)) {
+      next.compat = { ...enriched.compat ?? {}, ...isObject(next.compat) ? next.compat : {} };
+    }
     if (current?.reasoningEfforts === void 0) {
       next.reasoningEfforts = seedReasoning(sourceModel.id, profile.modelReasoningEffort).efforts;
     }
@@ -231,7 +324,7 @@ function classifyProfiles(profiles, existingProviders) {
     seen.set(key, true);
     const existingEntry = existing[key];
     const mapped = toProviderProfile(profile, existingEntry, key);
-    const status = existingEntry === void 0 ? "new" : JSON.stringify(existingEntry) === JSON.stringify(mapped) ? "unchanged" : "update";
+    const status = existingEntry === void 0 ? "new" : jsonEqual(existingEntry, mapped) ? "unchanged" : "update";
     return {
       profileId: profile.profileId,
       profileName: profile.profileName,
@@ -243,12 +336,40 @@ function classifyProfiles(profiles, existingProviders) {
   });
 }
 
+// lib/core/safety.js
+var HOST_SETTINGS_CONFLICT_CODE = "SETTINGS_CONFLICT";
+var REMOTE_SETTINGS_CONFLICT_CODE = "settings/conflict";
+function isSettingsConflict(error) {
+  if (!error) return false;
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (code === HOST_SETTINGS_CONFLICT_CODE || code === REMOTE_SETTINGS_CONFLICT_CODE) return true;
+  if (/conflict/i.test(code)) return true;
+  const message = error instanceof Error ? error.message : String(error?.message ?? error ?? "");
+  return /conflict/i.test(message);
+}
+var IMPORT_FAILURE = {
+  CREDENTIAL: "credential-write-failed",
+  SETTINGS: "settings-write-failed",
+  CONFLICT: "settings-conflict",
+  ROLLBACK: "credential-rollback-failed"
+};
+function redactText(value, secrets = []) {
+  let text = value instanceof Error ? value.message : String(value?.message ?? value ?? "");
+  for (const secret of secrets) {
+    if (typeof secret === "string" && secret.length >= 8) {
+      text = text.split(secret).join("[redacted]");
+    }
+  }
+  return text.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]").replace(/\b(?:authorization|x-api-key|api-key)\b[^\n]*/gi, "auth header [redacted]").replace(/[A-Za-z0-9_\-]{32,}/g, "[redacted]").slice(0, 300);
+}
+
 // lib/core/importer.js
 async function importProfiles({ profiles, selectedIds, settings, credentials, expectedRevision }) {
   const selected = new Set(selectedIds ?? []);
   const results = [];
-  const existing = await readExistingProviders(settings) ?? {};
+  const existing = { ...await readExistingProviders(settings) ?? {} };
   const usedKeys = /* @__PURE__ */ new Set();
+  let revisionForNextWrite = expectedRevision;
   for (const profile of profiles) {
     if (profile.skipped) {
       results.push({ profileId: profile.profileId, profileName: profile.profileName, status: "skipped", skipReason: profile.skipReason });
@@ -271,7 +392,7 @@ async function importProfiles({ profiles, selectedIds, settings, credentials, ex
     usedKeys.add(key);
     const wasConfigured = existing[key] !== void 0;
     const mapped = toProviderProfile(profile, existing[key], key);
-    if (wasConfigured && JSON.stringify(existing[key]) === JSON.stringify(mapped)) {
+    if (wasConfigured && jsonEqual(existing[key], mapped)) {
       results.push({ profileId: profile.profileId, profileName: profile.profileName, providerKey: key, status: "unchanged", warnings });
       continue;
     }
@@ -279,36 +400,71 @@ async function importProfiles({ profiles, selectedIds, settings, credentials, ex
     try {
       await credentials.set(ref, profile.apiKey);
     } catch (err) {
-      results.push({ profileId: profile.profileId, profileName: profile.profileName, providerKey: key, status: "failed", error: `\u51ED\u636E\u5199\u5165\u5931\u8D25\uFF1A${safeError(err)}`, warnings });
+      results.push({
+        profileId: profile.profileId,
+        profileName: profile.profileName,
+        providerKey: key,
+        status: "failed",
+        errorCode: IMPORT_FAILURE.CREDENTIAL,
+        error: `\u51ED\u636E\u5199\u5165\u5931\u8D25\uFF1A${redactText(err, [profile.apiKey])}`,
+        warnings
+      });
       continue;
     }
     try {
-      await settings.mutate("llm-pi-ai", [{ op: "set", path: ["providers", key], value: mapped }], expectedRevision);
+      await settings.mutate("llm-pi-ai", [{ op: "set", path: ["providers", key], value: mapped }], revisionForNextWrite);
     } catch (err) {
+      const conflict = isSettingsConflict(err);
+      const failure = {
+        profileId: profile.profileId,
+        profileName: profile.profileName,
+        providerKey: key,
+        status: "failed",
+        errorCode: conflict ? IMPORT_FAILURE.CONFLICT : IMPORT_FAILURE.SETTINGS,
+        error: `\u8BBE\u7F6E\u5199\u5165\u5931\u8D25\uFF1A${redactText(err, [profile.apiKey])}`,
+        warnings
+      };
       try {
         await restoreCredential(credentials, ref, previousCredential);
       } catch (cleanupErr) {
         results.push({
-          profileId: profile.profileId,
-          profileName: profile.profileName,
-          providerKey: key,
-          status: "failed",
-          error: `\u8BBE\u7F6E\u5199\u5165\u5931\u8D25\uFF1A${safeError(err)}\uFF1B\u4E14\u51ED\u636E\u56DE\u6EDA\u5931\u8D25\uFF1A${safeError(cleanupErr)}`,
-          warnings
+          ...failure,
+          errorCode: IMPORT_FAILURE.ROLLBACK,
+          error: `${failure.error}\uFF1B\u4E14\u51ED\u636E\u56DE\u6EDA\u5931\u8D25\uFF1A${redactText(cleanupErr, [profile.apiKey])}`
         });
         continue;
       }
-      results.push({ profileId: profile.profileId, profileName: profile.profileName, providerKey: key, status: "failed", error: `\u8BBE\u7F6E\u5199\u5165\u5931\u8D25\uFF1A${safeError(err)}`, warnings });
+      results.push(failure);
       continue;
     }
+    existing[key] = mapped;
+    revisionForNextWrite = await readRevision(settings);
     results.push({ profileId: profile.profileId, profileName: profile.profileName, providerKey: key, status: wasConfigured ? "updated" : "new", warnings });
   }
   return results;
 }
 async function readExistingProviders(settings) {
   try {
-    const value = settings.get ? await settings.get("llm-pi-ai") : void 0;
-    if (value && typeof value === "object" && value.providers) return value.providers;
+    if (typeof settings?.describe === "function") {
+      const namespaces = await settings.describe();
+      const namespace = (Array.isArray(namespaces) ? namespaces : []).find((entry) => entry.ns === "llm-pi-ai");
+      if (namespace?.value?.providers) return namespace.value.providers;
+    }
+    if (typeof settings?.get === "function") {
+      const value = await settings.get("llm-pi-ai");
+      if (value && typeof value === "object" && value.providers) return value.providers;
+    }
+  } catch {
+  }
+  return void 0;
+}
+async function readRevision(settings) {
+  try {
+    if (typeof settings?.describe === "function") {
+      const namespaces = await settings.describe();
+      const namespace = (Array.isArray(namespaces) ? namespaces : []).find((entry) => entry.ns === "llm-pi-ai");
+      if (namespace?.revision !== void 0) return namespace.revision;
+    }
   } catch {
   }
   return void 0;
@@ -334,16 +490,12 @@ async function restoreCredential(credentials, ref, previous) {
   if (previous.value !== void 0) return credentials.set(ref, previous.value);
   if (!previous.configured) return credentials.unset(ref);
 }
-function safeError(err) {
-  const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-<redacted>");
-}
 
 // lib/core/scan.js
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
 
 // lib/core/toml.js
 function stripInlineComment(value) {
@@ -416,20 +568,25 @@ function parseCodexToml(text) {
 }
 
 // lib/core/extract.js
-var SKIP_OFFICIAL = /* @__PURE__ */ new Set(["codex-official"]);
-var SKIP_NAMES = /* @__PURE__ */ new Set(["default"]);
+var SKIP_OFFICIAL = /* @__PURE__ */ new Set(["codex-official", "claude-official", "claude-desktop-official"]);
+var SKIP_NAMES = /* @__PURE__ */ new Set(["default", "OpenAI Official", "Claude Official", "Claude Desktop Official"]);
+var DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5";
+var DEFAULT_CODEX_MODEL = "gpt-5.1-codex";
+var DEFAULT_OPENCODE_MODEL = "gpt-4o";
 function extractProfile(row) {
   const profileId = String(row.id ?? "");
   const profileName = String(row.name ?? "");
+  const appType = String(row.app_type ?? "codex");
   if (SKIP_OFFICIAL.has(profileId)) {
-    return { profileId, profileName, skipped: true, skipReason: "\u5B98\u65B9 Codex \u767B\u5F55\u6001\uFF08official\uFF09\u4E0D\u652F\u6301\u5BFC\u5165" };
+    return { profileId, profileName, appType, skipped: true, skipReason: "\u5B98\u65B9\u767B\u5F55\u6001\uFF08official\uFF09\u4E0D\u652F\u6301\u5BFC\u5165" };
   }
-  if (SKIP_NAMES.has(profileName) || profileName === "OpenAI Official") {
-    return { profileId, profileName, skipped: true, skipReason: "\u5B98\u65B9/\u9ED8\u8BA4 provider \u4E0D\u652F\u6301\u5BFC\u5165" };
+  if (SKIP_NAMES.has(profileName)) {
+    return { profileId, profileName, appType, skipped: true, skipReason: "\u5B98\u65B9/\u9ED8\u8BA4 provider \u4E0D\u652F\u6301\u5BFC\u5165" };
   }
   const base = {
     profileId,
     profileName,
+    appType,
     isCurrent: Boolean(row.is_current),
     blocked: false,
     blockedReason: "",
@@ -447,13 +604,22 @@ function extractProfile(row) {
   } catch {
     return { ...base, blocked: true, blockedReason: "settings_config \u4E0D\u662F\u5408\u6CD5 JSON" };
   }
+  if (appType === "codex") return extractCodex(base, parsed);
+  if (appType === "claude" || appType === "claude-desktop") return extractClaude(base, parsed);
+  if (appType === "opencode") return extractOpencode(base, parsed);
+  return { ...base, blocked: true, blockedReason: `\u4E0D\u652F\u6301\u7684 app_type\uFF1A${appType}` };
+}
+function extractCodex(base, parsed) {
   const auth = (parsed && typeof parsed === "object" ? parsed.auth : void 0) ?? {};
   const apiKey = typeof auth.OPENAI_API_KEY === "string" && auth.OPENAI_API_KEY.length > 0 ? auth.OPENAI_API_KEY : void 0;
   if (apiKey === void 0) {
     return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08auth.OPENAI_API_KEY \u7F3A\u5931\uFF09" };
   }
   const configText = typeof parsed.config === "string" ? parsed.config : "";
-  const { model, reasoningEffort, provider } = parseCodexToml(configText);
+  const toml = parseCodexToml(configText);
+  const reasoningEffort = toml.reasoningEffort;
+  const provider = toml.provider;
+  let model = toml.model;
   if (!provider || typeof provider.baseUrl !== "string" || provider.baseUrl === "") {
     return { ...base, blocked: true, blockedReason: "config \u4E2D\u7F3A\u5C11\u53EF\u7528\u7684 [model_providers.custom] \u6BB5" };
   }
@@ -465,7 +631,8 @@ function extractProfile(row) {
     warnings.push(`\u672A\u77E5 wire_api "${provider.wireApi}"\uFF0C\u6309 openai-completions \u5904\u7406`);
   }
   if (!model) {
-    warnings.push("config \u4E2D\u6CA1\u6709 model \u5B57\u6BB5\uFF0C\u5BFC\u5165\u540E\u9700\u5728 DSH \u4E2D\u8865\u5145\u6A21\u578B");
+    model = DEFAULT_CODEX_MODEL;
+    warnings.push(`config \u4E2D\u6CA1\u6709 model \u5B57\u6BB5\uFF0C\u5DF2\u56DE\u9000\u4E3A ${DEFAULT_CODEX_MODEL}\uFF0C\u5BFC\u5165\u540E\u53EF\u5728 DSH \u4E2D\u4FEE\u6539`);
   }
   const api = provider.wireApi === "responses" ? "openai-responses" : "openai-completions";
   return {
@@ -473,8 +640,73 @@ function extractProfile(row) {
     apiKey,
     baseURL: provider.baseUrl,
     api,
-    models: model ? [{ id: model }] : [],
+    models: [{ id: model }],
     modelReasoningEffort: reasoningEffort,
+    warnings,
+    unsupported: []
+  };
+}
+function extractClaude(base, parsed) {
+  const { profileName } = base;
+  const env = (parsed && typeof parsed === "object" ? parsed.env : void 0) ?? {};
+  const apiKey = [env.ANTHROPIC_AUTH_TOKEN, env.ANTHROPIC_API_KEY].find((value) => typeof value === "string" && value.length > 0);
+  if (apiKey === void 0) {
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08env.ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY \u7F3A\u5931\uFF09" };
+  }
+  const baseURL = typeof env.ANTHROPIC_BASE_URL === "string" && env.ANTHROPIC_BASE_URL.length > 0 ? env.ANTHROPIC_BASE_URL : void 0;
+  if (baseURL === void 0) {
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08env.ANTHROPIC_BASE_URL \u7F3A\u5931\uFF09" };
+  }
+  const warnings = [];
+  let model = typeof env.ANTHROPIC_MODEL === "string" && env.ANTHROPIC_MODEL.length > 0 ? env.ANTHROPIC_MODEL : DEFAULT_CLAUDE_MODEL;
+  if (!env.ANTHROPIC_MODEL) {
+    warnings.push(`claude \u914D\u7F6E\u4E2D\u6CA1\u6709\u6A21\u578B\u5B57\u6BB5\uFF0C\u5DF2\u56DE\u9000\u4E3A ${DEFAULT_CLAUDE_MODEL}\uFF0C\u5BFC\u5165\u540E\u53EF\u5728 DSH \u4E2D\u4FEE\u6539`);
+    if (/thinking/i.test(profileName)) {
+      model = { id: DEFAULT_CLAUDE_MODEL, fallbackThinking: true };
+    }
+  }
+  return {
+    ...base,
+    apiKey,
+    baseURL,
+    api: "anthropic-messages",
+    models: [model],
+    modelReasoningEffort: void 0,
+    warnings,
+    unsupported: []
+  };
+}
+function extractOpencode(base, parsed) {
+  const options = (parsed && typeof parsed === "object" ? parsed.options : void 0) ?? {};
+  const apiKey = typeof options.apiKey === "string" && options.apiKey.length > 0 ? options.apiKey : void 0;
+  if (apiKey === void 0) {
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 API key\uFF08options.apiKey \u7F3A\u5931\uFF09" };
+  }
+  const baseURL = typeof options.baseURL === "string" && options.baseURL.length > 0 ? options.baseURL : void 0;
+  if (baseURL === void 0) {
+    return { ...base, blocked: true, blockedReason: "\u672A\u627E\u5230 base URL\uFF08options.baseURL \u7F3A\u5931\uFF09" };
+  }
+  const npm = typeof parsed.npm === "string" ? parsed.npm : "";
+  if (npm !== "@ai-sdk/openai-compatible") {
+    return { ...base, blocked: true, blockedReason: `\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A${npm || "\u672A\u77E5"}\uFF08\u4EC5 @ai-sdk/openai-compatible\uFF09` };
+  }
+  const warnings = [];
+  const rawModels = (parsed && typeof parsed === "object" ? parsed.models : void 0) ?? {};
+  const models = Object.entries(rawModels).filter(([id]) => typeof id === "string" && id.length > 0).map(([id, meta]) => {
+    const name2 = meta && typeof meta === "object" && typeof meta.name === "string" ? meta.name : void 0;
+    return name2 ? { id, name: name2 } : { id };
+  });
+  if (models.length === 0) {
+    models.push({ id: DEFAULT_OPENCODE_MODEL });
+    warnings.push(`opencode \u914D\u7F6E\u4E2D\u6CA1\u6709\u6A21\u578B\u5217\u8868\uFF0C\u5DF2\u56DE\u9000\u4E3A ${DEFAULT_OPENCODE_MODEL}\uFF0C\u5BFC\u5165\u540E\u53EF\u5728 DSH \u4E2D\u4FEE\u6539`);
+  }
+  return {
+    ...base,
+    apiKey,
+    baseURL,
+    api: "openai-completions",
+    models,
+    modelReasoningEffort: void 0,
     warnings,
     unsupported: []
   };
@@ -484,25 +716,128 @@ function extractProfile(row) {
 var DEFAULT_DB_CANDIDATES = [
   () => join(homedir(), ".cc-switch", "cc-switch.db")
 ];
+var SUPPORTED_APP_TYPES = ["codex", "claude", "claude-desktop", "opencode"];
+var SCAN_REASON = {
+  NOT_INSTALLED: "not-installed",
+  NO_PROFILES: "no-profiles",
+  UNREADABLE: "unreadable",
+  UNSUPPORTED_NODE: "unsupported-node"
+};
+var require2 = createRequire(import.meta.url);
+var databaseSyncClass;
+var databaseSyncResolved = false;
+function loadDatabaseSync() {
+  if (!databaseSyncResolved) {
+    databaseSyncResolved = true;
+    try {
+      databaseSyncClass = require2("node:sqlite")?.DatabaseSync;
+    } catch {
+      databaseSyncClass = void 0;
+    }
+  }
+  return databaseSyncClass;
+}
+function sqliteAvailable() {
+  return typeof loadDatabaseSync() === "function";
+}
 function openDb(dbPath) {
+  const DatabaseSync = loadDatabaseSync();
+  if (!DatabaseSync) {
+    throw new Error(`node:sqlite is unavailable on Node ${process.version}; this importer needs Node >= 22.5`);
+  }
   return new DatabaseSync(dbPath, { readOnly: true });
 }
 function discoverSources() {
   return DEFAULT_DB_CANDIDATES.map((fn) => fn()).filter((p) => existsSync(p));
 }
-function scanProfiles(dbPath) {
-  if (typeof dbPath !== "string" || dbPath === "" || !existsSync(dbPath)) return [];
+function defaultSourcePath() {
+  return DEFAULT_DB_CANDIDATES[0]?.();
+}
+function defaultLogger(message) {
+  console.error("[dsh-ccswitch-importer-plus]", message);
+}
+function scanFailureMessage(err, dbPath) {
+  const reason = err?.code ?? err?.name ?? "error";
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const detail = /no such table/i.test(message) ? " (no providers table)" : "";
+  return `scan failed for ${dbPath}: ${reason}${detail}`;
+}
+function scanSource(dbPath, { logger = defaultLogger } = {}) {
+  if (!sqliteAvailable()) {
+    return { profiles: [], reason: SCAN_REASON.UNSUPPORTED_NODE, dbPath };
+  }
+  if (typeof dbPath !== "string" || dbPath === "" || !existsSync(dbPath)) {
+    return { profiles: [], reason: SCAN_REASON.NOT_INSTALLED, dbPath };
+  }
   let db;
   try {
     db = openDb(dbPath);
     const rows = db.prepare("SELECT id, name, settings_config, is_current, app_type FROM providers").all();
-    return rows.filter((row) => row.app_type === "codex").map((row) => extractProfile(row)).filter((profile) => profile !== void 0);
+    const profiles = rows.filter((row) => SUPPORTED_APP_TYPES.includes(row.app_type)).map((row) => extractProfile(row)).filter((profile) => profile !== void 0);
+    return { profiles, reason: profiles.length === 0 ? SCAN_REASON.NO_PROFILES : void 0, dbPath };
   } catch (err) {
-    console.error("[dsh-ccswitch-importer] scan failed:", err);
-    return [];
+    logger(scanFailureMessage(err, dbPath));
+    return { profiles: [], reason: SCAN_REASON.UNREADABLE, dbPath };
   } finally {
     if (db) db.close();
   }
+}
+
+// lib/core/probe.js
+var PROBE_TIMEOUT_MS = 8e3;
+var MAX_PROBED_MODELS = 100;
+function joinUrl(baseURL, path) {
+  return `${String(baseURL).replace(/\/+$/, "")}${path}`;
+}
+async function probeModels(profile) {
+  const warnings = [];
+  if (profile.apiKey === void 0 || !profile.baseURL) return { profile, warnings };
+  if (profile.api === "anthropic-messages") {
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const headers = { accept: "application/json" };
+    headers.authorization = `Bearer ${profile.apiKey}`;
+    if (profile.api === "anthropic-messages") {
+      headers["x-api-key"] = profile.apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+    }
+    const url = joinUrl(profile.baseURL, "/models");
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) {
+      warnings.push(`\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`);
+      return { profile, warnings };
+    }
+    const payload = await response.json();
+    const ids = extractModelIds(payload);
+    if (ids.length === 0) {
+      warnings.push("\u6A21\u578B\u63A2\u6D4B\u8FD4\u56DE\u7A7A\u5217\u8868\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868");
+      return { profile, warnings };
+    }
+    const existing = new Set((profile.models ?? []).map((model) => model.id));
+    const merged = [...profile.models ?? []];
+    for (const id of ids) {
+      if (existing.has(id)) continue;
+      existing.add(id);
+      merged.push(isKnownModel(id) ? { id, name: displayNameFor(id) } : { id });
+    }
+    warnings.push(`\u6A21\u578B\u63A2\u6D4B\u6210\u529F\uFF1A\u65B0\u589E ${merged.length - (profile.models?.length ?? 0)} \u4E2A\u6A21\u578B\uFF08\u5171 ${merged.length} \u4E2A\uFF09`);
+    return { profile: { ...profile, models: merged.slice(0, MAX_PROBED_MODELS) }, warnings };
+  } catch (err) {
+    const reason = err?.name === "AbortError" ? "\u8D85\u65F6" : "\u7F51\u7EDC\u9519\u8BEF";
+    warnings.push(`\u6A21\u578B\u63A2\u6D4B${reason}\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`);
+    return { profile, warnings };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function extractModelIds(payload) {
+  const list = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+  return list.map((entry) => typeof entry === "string" ? entry : entry?.id).filter((id) => typeof id === "string" && id.length > 0).slice(0, MAX_PROBED_MODELS);
+}
+function displayNameFor(modelId) {
+  return modelId.split(/[-_]/).map((part) => /^\d/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 
 // src/host/routes.mjs
@@ -510,6 +845,7 @@ var API_BASE = "/api/dsh-ccswitch";
 var MAX_JSON_BODY_BYTES = 64 * 1024;
 var SAFE_STATUSES = /* @__PURE__ */ new Set(["new", "update", "updated", "unchanged", "blocked", "failed", "skipped"]);
 var SAFE_REASONING = /* @__PURE__ */ new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+var SAFE_SCAN_REASONS = new Set(Object.values(SCAN_REASON));
 function isLoopbackRequest(request) {
   const address = request.socket?.remoteAddress;
   if (address !== "127.0.0.1" && address !== "::1" && address !== "::ffff:127.0.0.1") return false;
@@ -557,6 +893,9 @@ function publicWarning(value) {
 function publicWarnings(value) {
   return Array.isArray(value) ? value.slice(0, 20).map(publicWarning) : [];
 }
+function publicErrorDetail(value, secrets = []) {
+  return redactText(value, secrets) || "import failed";
+}
 function publicSummary(summary) {
   return {
     profileId: publicText(summary.profileId),
@@ -574,7 +913,7 @@ function publicSummary(summary) {
     blockedReason: summary.blockedReason ? "source profile is blocked" : void 0
   };
 }
-function publicResult(result) {
+function publicResult(result, secrets = []) {
   const status = SAFE_STATUSES.has(result?.status) ? result.status : "failed";
   const output = {
     profileId: publicText(result?.profileId),
@@ -583,7 +922,7 @@ function publicResult(result) {
     status,
     warnings: publicWarnings(result?.warnings)
   };
-  if (status === "failed") output.error = "import failed";
+  if (status === "failed") output.error = publicErrorDetail(result?.error, secrets);
   if (status === "blocked") output.error = "profile blocked";
   if (status === "skipped") output.skipReason = "profile was not selected or is not importable";
   return output;
@@ -602,7 +941,10 @@ async function readJsonBody(request) {
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_JSON_BODY_BYTES) return void 0;
+    if (size > MAX_JSON_BODY_BYTES) {
+      request.destroy?.();
+      return void 0;
+    }
     chunks.push(buffer);
   }
   try {
@@ -614,15 +956,30 @@ async function readJsonBody(request) {
 }
 function defaultScan() {
   const sources = discoverSources();
-  return sources.length === 0 ? [] : scanProfiles(sources[0]);
+  if (sources.length === 0) {
+    return { profiles: [], reason: SCAN_REASON.NOT_INSTALLED, dbPath: defaultSourcePath() };
+  }
+  return scanSource(sources[0]);
 }
-function methodFence(request, response, isLoopback, method) {
+function normalizeScanResult(scanned) {
+  if (Array.isArray(scanned)) return { profiles: scanned, reason: void 0, dbPath: void 0 };
+  return {
+    profiles: Array.isArray(scanned?.profiles) ? scanned.profiles : [],
+    reason: scanned?.reason,
+    dbPath: scanned?.dbPath
+  };
+}
+function methodFence(request, response, isLoopback, method, { requireOrigin = false } = {}) {
   if (!isLoopback(request)) {
     writeJson(response, 403, { error: "forbidden: loopback and same-origin only" });
     return false;
   }
   if (request.method !== method) {
     writeJson(response, 405, { error: "method not allowed" });
+    return false;
+  }
+  if (requireOrigin && typeof request.headers?.origin !== "string") {
+    writeJson(response, 403, { error: "forbidden: missing Origin on a state-changing request" });
     return false;
   }
   return true;
@@ -641,8 +998,14 @@ function makeRoutes(deps = {}) {
       handler: async (request, response) => {
         if (!methodFence(request, response, isLoopback, "GET")) return;
         try {
-          const classified = classifyProfiles(await scan(), await getProviders());
-          writeJson(response, 200, { profiles: classified.map((item) => publicSummary(item.summary)) });
+          const { profiles, reason, dbPath } = normalizeScanResult(await scan());
+          const classified = classifyProfiles(profiles, await getProviders());
+          const body = { profiles: classified.map((item) => publicSummary(item.summary)) };
+          if (SAFE_SCAN_REASONS.has(reason)) {
+            body.source = reason;
+            if (reason === SCAN_REASON.NOT_INSTALLED) body.probedPath = publicText(dbPath);
+          }
+          writeJson(response, 200, body);
         } catch {
           writeJson(response, 500, { error: "scan failed" });
         }
@@ -652,41 +1015,69 @@ function makeRoutes(deps = {}) {
       kind: "exact",
       path: `${API_BASE}/import`,
       handler: async (request, response) => {
-        if (!methodFence(request, response, isLoopback, "POST")) return;
+        if (!methodFence(request, response, isLoopback, "POST", { requireOrigin: true })) return;
         const body = await readJsonBody(request);
         if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== "string")) {
-          writeJson(response, 400, { error: "body must be { profileIds: string[], expectedRevision?: number }" });
+          writeJson(response, 400, { error: "body must be { profileIds: string[], expectedRevision?: number, probe?: boolean }" });
           return;
         }
         if (body.expectedRevision !== void 0 && (typeof body.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision))) {
           writeJson(response, 400, { error: "expectedRevision must be an integer" });
           return;
         }
+        let knownSecrets = [];
         try {
+          let profiles = normalizeScanResult(await scan()).profiles;
+          if (body.probe === true) {
+            const selected = new Set(body.profileIds);
+            const probed = await Promise.all(
+              profiles.filter((profile) => !profile.skipped && !profile.blocked && selected.has(profile.profileId)).map((profile) => probeModels(profile))
+            );
+            const probedById = new Map(probed.map((entry) => [entry.profile.profileId, entry]));
+            profiles = profiles.map((profile) => {
+              const entry = probedById.get(profile.profileId);
+              return entry ? { ...profile, models: entry.profile.models, warnings: [...profile.warnings ?? [], ...entry.warnings] } : profile;
+            });
+          }
+          const secretByProfileId = /* @__PURE__ */ new Map();
+          for (const profile of profiles) {
+            if (typeof profile.apiKey === "string" && profile.apiKey.length > 0) {
+              secretByProfileId.set(profile.profileId, profile.apiKey);
+            }
+          }
+          knownSecrets = [...secretByProfileId.values()];
           const results = await importProfiles2({
-            profiles: await scan(),
+            profiles,
             selectedIds: body.profileIds,
             settings,
             credentials,
             expectedRevision: body.expectedRevision
           });
-          writeJson(response, 200, { results: results.map(publicResult) });
-        } catch {
+          writeJson(response, 200, { results: results.map((result) => publicResult(result, knownSecretsFor(result, secretByProfileId))) });
+        } catch (err) {
+          const label = err instanceof Error ? err.name : typeof err;
+          console.error("[dsh-ccswitch-importer-plus] import failed:", `${label}: ${redactText(err, knownSecrets)}`);
           writeJson(response, 500, { error: "import failed" });
         }
       }
     }
   ];
 }
+function knownSecretsFor(result, secretByProfileId) {
+  const own = secretByProfileId.get(result?.profileId);
+  return typeof own === "string" ? [own] : [];
+}
 
 // src/host/index.mjs
-var name = "dsh-ccswitch-importer";
+var name = "dsh-ccswitch-importer-plus";
 var inject = ["webServer", "settings", "credentials"];
 function apply(ctx) {
   const routes = makeRoutes({
+    // 0.2.0 SettingsForms has no get(); describe() returns per-namespace views.
     getProviders: async () => {
-      const value = await ctx.settings.get("llm-pi-ai");
-      return value?.providers ?? {};
+      const namespaces = ctx.settings.describe();
+      const namespace = namespaces.find((entry) => entry.ns === "llm-pi-ai");
+      return namespace?.value?.providers ?? {};
     },
     settings: ctx.settings,
     credentials: ctx.credentials,
@@ -697,7 +1088,7 @@ function apply(ctx) {
     return () => {
       for (const dispose of disposers) if (typeof dispose === "function") dispose();
     };
-  }, "dsh-ccswitch-importer: routes");
+  }, "dsh-ccswitch-importer-plus: routes");
 }
 export {
   apply,

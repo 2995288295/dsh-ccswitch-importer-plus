@@ -1,23 +1,39 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { LEVELS } from "../domain/validation.mjs";
 import { draftForModel, draftSignature, reconcileDraft, rebaseDraft, reloadDraft } from "./reasoning-editor-state.mjs";
 import { loadCollapse, saveCollapse, withModelToggled, isModelCollapsed } from "./collapse-state.mjs";
+import { makeTranslator } from "../client/i18n.mjs";
 
 const h = React.createElement;
 
-function displayStatus(status) {
-  if (status === "saving") return "保存中…";
-  if (status === "saved") return "已保存";
-  return status;
+/**
+ * `saved` means the document matches what the user is looking at. When the user
+ * kept editing while a save was in flight, the newer edits are deliberately kept
+ * (rebaseDraft) but they are NOT written — reporting `saved` there would tell the
+ * user their work is safe when it is not.
+ */
+const STATUS_SAVED_DIRTY = "saved-dirty";
+
+function displayStatus(status, tr, rawError) {
+  if (status === "saving") return tr("reasoning.saving", "保存中…");
+  if (status === "saved") return tr("reasoning.saved", "已保存");
+  if (status === STATUS_SAVED_DIRTY) return tr("reasoning.savedDirty", "已保存，但仍有未保存的改动");
+  if (!status) return "";
+  return tr("reasoning.saveFailed", "保存失败：{message}", { message: rawError ?? status });
 }
 
-function ModelEditor({ route, model, controller, writable, revision, collapsed = false, onToggleCollapsed }) {
+function ModelEditor({ route, model, controller, writable, revision, collapsed = false, onToggleCollapsed, tr }) {
   const initial = draftForModel(model);
   const [draft, setDraft] = useState(initial);
   const [baseline, setBaseline] = useState(initial);
   const [baselineRevision, setBaselineRevision] = useState(revision);
   const [remoteChanged, setRemoteChanged] = useState(false);
   const [status, setStatus] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [customOpen, setCustomOpen] = useState(false);
   const draftRef = useRef(draft);
   const baselineRef = useRef(baseline);
@@ -77,6 +93,7 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
     const remoteModel = remoteSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
     applyReconciledState(reloadDraft({ remoteModel, remoteRevision: remoteSnapshot.revision }));
     setStatus("");
+    setSaveError("");
   };
 
   const save = async () => {
@@ -86,17 +103,20 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
     const savingSignature = draftSignature(draftToSave);
     const savingRevision = baselineRevisionRef.current;
     setStatus("saving");
+    setSaveError("");
     try {
       const nextSnapshot = await controller.save(route, model.id, draftToSave.mode, draftToSave.efforts, savingRevision);
       const savedModel = nextSnapshot.providers[route]?.models?.find((entry) => entry.id === model.id) ?? model;
       if (draftSignature(draftRef.current) === savingSignature) {
         applyReconciledState(reloadDraft({ remoteModel: savedModel, remoteRevision: nextSnapshot.revision }));
+        setStatus("saved");
       } else {
         applyReconciledState(rebaseDraft({ draft: draftRef.current, savedModel, savedRevision: nextSnapshot.revision }));
+        setStatus(STATUS_SAVED_DIRTY);
       }
-      setStatus("saved");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      setSaveError(error instanceof Error ? error.message : String(error));
+      setStatus("error");
     } finally {
       saveInFlightRef.current = false;
     }
@@ -109,9 +129,11 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
     ? "dsh-reasoning-status dsh-reasoning-status--saving"
     : status === "saved"
       ? "dsh-reasoning-status dsh-reasoning-status--success"
-      : status
-        ? "dsh-reasoning-status dsh-reasoning-status--error"
-        : "dsh-reasoning-status";
+      : status === STATUS_SAVED_DIRTY
+        ? "dsh-reasoning-status dsh-reasoning-status--dirty"
+        : status
+          ? "dsh-reasoning-status dsh-reasoning-status--error"
+          : "dsh-reasoning-status";
   return h("article", { className: "dsh-reasoning-model" + (collapsed ? " dsh-reasoning-model--collapsed" : "") },
     h("header", { className: "dsh-reasoning-model__header" },
       h("div", { className: "dsh-reasoning-model__identity" },
@@ -119,22 +141,22 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
         model.id !== modelName && h("code", null, model.id),
       ),
       h("div", { className: "dsh-reasoning-model__mode-area" },
-        h("span", { className: "dsh-reasoning-model__mode-label" }, "推理模式"),
-        h("div", { className: "dsh-reasoning-mode", role: "group", "aria-label": model.id + " 推理模式" },
+        h("span", { className: "dsh-reasoning-model__mode-label" }, tr("reasoning.mode", "推理模式")),
+        h("div", { className: "dsh-reasoning-mode", role: "group", "aria-label": tr("reasoning.modeAria", "{model} 推理模式", { model: model.id }) },
           h("button", {
             type: "button",
             className: draft.mode === "disabled" ? "dsh-reasoning-mode__option dsh-reasoning-mode__option--active" : "dsh-reasoning-mode__option",
             "aria-pressed": draft.mode === "disabled",
             disabled: !writable,
             onClick: () => setMode("disabled"),
-          }, "关闭"),
+          }, tr("reasoning.modeDisabled", "关闭")),
           h("button", {
             type: "button",
             className: draft.mode === "enabled" ? "dsh-reasoning-mode__option dsh-reasoning-mode__option--active" : "dsh-reasoning-mode__option",
             "aria-pressed": draft.mode === "enabled",
             disabled: !writable,
             onClick: () => setMode("enabled"),
-          }, "启用"),
+          }, tr("reasoning.modeEnabled", "启用")),
         ),
       ),
       h("button", {
@@ -142,15 +164,18 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
         className: "dsh-reasoning-collapse",
         "aria-expanded": !collapsed,
         "aria-controls": "dsh-reasoning-model-body-" + customBodyId,
-        "aria-label": (collapsed ? "展开" : "收起") + " " + modelName + " 推理设置",
+        "aria-label": tr("reasoning.collapseAria", "{action} {model} 推理设置", {
+          action: collapsed ? tr("reasoning.expand", "展开") : tr("reasoning.collapse", "收起"),
+          model: modelName,
+        }),
         onClick: () => onToggleCollapsed?.(route, model.id, !collapsed),
       }, h("span", { "aria-hidden": "true" }, collapsed ? "⌄" : "⌃")),
     ),
     h("div", { id: "dsh-reasoning-model-body-" + customBodyId, className: "dsh-reasoning-model__body", hidden: collapsed || draft.mode !== "enabled" },
-      h("div", { className: "dsh-reasoning-levels", "aria-label": model.id + " 可用推理等级" },
+      h("div", { className: "dsh-reasoning-levels", "aria-label": tr("reasoning.levelsAria", "{model} 可用推理等级", { model: model.id }) },
         h("div", { className: "dsh-reasoning-levels__heading" },
-          h("span", { className: "dsh-reasoning-levels__label" }, "可用等级"),
-          h("span", { className: "dsh-reasoning-levels__summary" }, "已选 " + selectedCount + " 项"),
+          h("span", { className: "dsh-reasoning-levels__label" }, tr("reasoning.levelsHeading", "可用等级")),
+          h("span", { className: "dsh-reasoning-levels__summary" }, tr("reasoning.levelsSelected", "已选 {count} 项", { count: selectedCount })),
         ),
         h("div", { className: "dsh-reasoning-levels__options" },
           ...LEVELS.map((level) => {
@@ -174,7 +199,7 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
           "aria-expanded": customOpen,
           "aria-controls": customBodyId,
           onClick: () => setCustomOpen((current) => !current),
-        }, h("span", null, customOpen ? "收起自定义映射" : "自定义 wire 值"),
+        }, h("span", null, customOpen ? tr("reasoning.customHide", "收起自定义映射") : tr("reasoning.customShow", "自定义 wire 值")),
         h("span", { "aria-hidden": "true" }, customOpen ? "⌃" : "⌄")),
         customOpen && h("div", { id: customBodyId, className: "dsh-reasoning-custom__body" },
           ...LEVELS.filter((level) => Object.hasOwn(draft.efforts, level)).map((level) => h("label", { key: level, className: "dsh-reasoning-custom__field" },
@@ -182,31 +207,31 @@ function ModelEditor({ route, model, controller, writable, revision, collapsed =
             h("input", {
               type: "text",
               value: draft.efforts[level] ?? "",
-              placeholder: level === "off" ? "留空表示 null" : level,
+              placeholder: level === "off" ? tr("reasoning.customNullPlaceholder", "留空表示 null") : level,
               disabled: !writable,
               onChange: (event) => setDraft((current) => ({ ...current, efforts: { ...current.efforts, [level]: event.target.value } })),
-              "aria-label": model.id + " " + level + " wire 值",
+              "aria-label": tr("reasoning.customWireAria", "{model} {level} wire 值", { model: model.id, level }),
             }),
           )),
         ),
       ),
     ),
     !collapsed && h("footer", { className: "dsh-reasoning-model__footer" },
-      h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? "远端已更新" : ""),
-      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, "重新载入"),
-      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status)),
-      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? "保存中…" : "保存"),
+      h("span", { className: "dsh-reasoning-remote-status", role: "status", "aria-live": "polite" }, remoteChanged ? tr("reasoning.remoteUpdated", "远端已更新") : ""),
+      remoteChanged && h("button", { className: "dsh-reasoning-reload", type: "button", onClick: reload }, tr("reasoning.reload", "重新载入")),
+      h("span", { role: "status", "aria-live": "polite", className: statusClass }, displayStatus(status, tr, saveError)),
+      h("button", { className: "dsh-reasoning-save", type: "button", disabled: !writable || status === "saving", onClick: save }, status === "saving" ? tr("reasoning.saving", "保存中…") : tr("reasoning.save", "保存")),
     ),
   );
 }
 
-function renderProvider([route, provider], controller, writable, revision, collapse, onToggleCollapsed) {
+function renderProvider([route, provider], controller, writable, revision, collapse, onToggleCollapsed, tr) {
   return h(
     "section",
     { key: route, className: "dsh-reasoning-provider" },
     h("div", { className: "dsh-reasoning-provider__header" },
       h("h3", null, route),
-      h("span", null, provider.models.length + " 个模型"),
+      h("span", null, tr("reasoning.modelCount", "{count} 个模型", { count: provider.models.length })),
     ),
     h("div", { className: "dsh-reasoning-provider__models" },
       ...provider.models.map((model) => h(ModelEditor, {
@@ -218,12 +243,14 @@ function renderProvider([route, provider], controller, writable, revision, colla
         revision,
         collapsed: isModelCollapsed(collapse, route, model.id),
         onToggleCollapsed,
+        tr,
       })),
     ),
   );
 }
 
-export function ReasoningSettingsSection({ controller, embedded = false, collapse: collapseProp, setCollapse: setCollapseProp }) {
+export function ReasoningSettingsSection({ controller, embedded = false, collapse: collapseProp, setCollapse: setCollapseProp, t }) {
+  const tr = makeTranslator(t);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const providers = Object.entries(snapshot.providers).filter(([, provider]) => Array.isArray(provider?.models));
   const [localCollapse, setLocalCollapse] = useState(() => loadCollapse());
@@ -239,17 +266,17 @@ export function ReasoningSettingsSection({ controller, embedded = false, collaps
   useEffect(() => {
     if (snapshot.status === "idle") void controller.refresh();
   }, [controller, snapshot.status]);
-  if (snapshot.status === "loading" && providers.length === 0) return h("p", null, "正在加载模型推理设置…");
+  if (snapshot.status === "loading" && providers.length === 0) return h("p", null, tr("reasoning.loading", "正在加载模型推理设置…"));
   if (snapshot.status === "error") return h("p", { role: "alert" }, snapshot.error);
   return h(
     "section",
     { className: embedded ? "dsh-reasoning-settings dsh-reasoning-settings--embedded" : "dsh-reasoning-settings" },
     !embedded && h("header", null,
-      h("h2", null, "模型推理"),
-      h("p", null, "为自定义 provider 的每个模型设置推理等级。"),
+      h("h2", null, tr("reasoning.title", "模型推理")),
+      h("p", null, tr("reasoning.intro", "为自定义 provider 的每个模型设置推理等级。")),
     ),
     providers.length === 0
-      ? h("p", null, "暂无自定义 provider 模型。")
-      : providers.map((entry) => renderProvider(entry, controller, snapshot.writable, snapshot.revision, collapse, toggleModelCollapsed)),
+      ? h("p", null, tr("reasoning.empty", "暂无自定义 provider 模型。"))
+      : providers.map((entry) => renderProvider(entry, controller, snapshot.writable, snapshot.revision, collapse, toggleModelCollapsed, tr)),
   );
 }

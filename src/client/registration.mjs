@@ -1,24 +1,25 @@
-export const SETTINGS_SECTION_ID = "models";
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
+import { MESSAGES } from "./messages.mjs";
+
+export const MODELS_FOOTER_SLOT = "settings.models.footer";
 
 /**
- * Register the reasoning editor as the winning occupant of the built-in
- * models settings section. The built-in Models page stays on the ledger and
- * is rendered by our composite component, so the reasoning controls appear on
- * the same page instead of adding a separate top-level settings page.
+ * Plan A: never shadow the built-in models settings section. Instead, mount
+ * our panels (CCSwitch import + reasoning editor) into the built-in page's
+ * own declared extension seat `settings.models.footer` (kind "list", scope
+ * "root"), so the native "Add model provider" entry point keeps working.
  */
 export function registerReasoningSettings(ctx, { controller, importer, component, t }) {
-  ctx.locale?.register?.("dsh-ccswitch-importer", {
-    zh: { nav: "模型推理" },
-    en: { nav: "Model reasoning" },
-  });
+  // Register the whole catalogue, not just `nav`: every string the panels render
+  // resolves through these keys, so a locale switch translates the entire UI.
+  ctx.locale?.register?.("dsh-ccswitch-importer-plus", MESSAGES);
 
-  ctx.slots.inject("settings.section", () => ctx.slots.register({
-    name: "settings.section",
-    id: SETTINGS_SECTION_ID,
-    // Negative priority shadows the built-in Models section when the settings
-    // shell renders content, while ctx.slots.entries still exposes that
-    // built-in entry so the composite can render it in place.
-    priority: -1,
+  ctx.slots.inject(MODELS_FOOTER_SLOT, () => ctx.slots.register({
+    name: MODELS_FOOTER_SLOT,
+    id: "ccswitch-importer",
     order: 10,
     inject: () => ({ controller, importer, slots: ctx.slots, t }),
   }, component));
@@ -38,9 +39,8 @@ export function registerReasoningSettings(ctx, { controller, importer, component
   const disposers = [
     listen("settings/document-updated", () => { void controller.refresh(); }),
     listen("llm/adapters-updated", () => { void controller.refresh(); }),
-    listen("credentials/updated", refreshImporter),
+    listen("credentials/record-updated", refreshImporter),
     listen("credentials/reference-updated", refreshImporter),
-    listen("connection/reset", () => { void controller.refresh(); }),
   ];
   return () => disposers.forEach((dispose) => dispose());
 }

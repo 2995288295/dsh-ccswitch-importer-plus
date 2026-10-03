@@ -1,12 +1,14 @@
-# DSH CCSwitch Importer
+# DSH CCSwitch Importer (community edition)
 
-Import CCSwitch Codex provider configurations into DeepSeek Harness and manage per-model reasoning depth on the same **Settings -> Models** page.
+Import CCSwitch Codex, Claude, Claude Desktop, and OpenCode providers into DeepSeek Harness and manage per-model reasoning depth on the same **Settings -> Models** page.
 
 [中文 README](./README.md)
 
+> **Derivative work notice**: this plugin is a **derivative** of [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-importer) (Apache-2.0), maintained by a third party. It is **not the original author's official release**. The upstream version targets DSH 0.1.x; this version reworks the Host/Client wiring for **DSH 0.2.0-rc.2** and fixes batch import, secret redaction, and localization. The npm package is `dsh-ccswitch-importer-plus`; the plugin id and loader id match the package name. See [Differences from upstream](#differences-from-upstream).
+
 ## Features
 
-- Read-only scanning of `~/.cc-switch/cc-switch.db` for custom Codex providers; official and default profiles are skipped.
+- Read-only scanning of `~/.cc-switch/cc-switch.db` for custom **Codex**, **Claude**, **Claude Desktop**, and **OpenCode** providers; official and default profiles are skipped.
 - Imports endpoints, protocol, model IDs, and API keys into DSH’s `llm-pi-ai` settings.
 - Reads API keys only in the Host process and stores them through DSH credentials as an `apiKeyEnv` reference; scan and import responses are redacted.
 - Prefills reasoning from the top-level Codex TOML field `model_reasoning_effort` while keeping all values editable in DSH.
@@ -22,13 +24,13 @@ CCSwitch is a read-only import source. After import, DSH settings and the creden
 Install from GitHub:
 
 ```bash
-dsh plugin --profile desktop add github:wtiaw/dsh-ccswitch-importer
+dsh plugin --profile desktop add github:2995288295/dsh-ccswitch-importer-plus
 ```
 
 Install from a local checkout:
 
 ```bash
-dsh plugin --profile desktop add ./dsh-ccswitch-importer
+dsh plugin --profile desktop add ./dsh-ccswitch-importer-plus
 ```
 
 After installing or updating, reload DSH Web and open **Settings -> Models**.
@@ -74,8 +76,32 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host routes accept only loopback, same-origin requests; API keys never enter the browser, logs, summaries, or error text.
 - Reading requires Node.js 22.19 or newer for the read-only SQLite API.
-- The plugin handles custom CCSwitch Codex providers and the fields currently present in the database; it does not probe third-party API capabilities.
+- The plugin handles custom CCSwitch Codex / Claude / Claude Desktop / OpenCode providers and the fields currently present in the database; it does not probe third-party API capabilities.
 - Unknown models and invalid levels default to disabled reasoning to avoid sending unconfirmed parameters to a gateway.
+
+## Differences from upstream
+
+Relative to [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-importer) (`0.1.3`, 2026-09-24, targeting DSH 0.1.x):
+
+**Compatibility rewrite for DSH 0.2.0-rc.2**
+
+- Peer dependencies moved to `^0.2.0-rc.2`; the `@deepseek-ai/dsh-client-runtime` injection dropped in 0.2.0 was removed.
+- Adapted to the 0.2.0 `{ ok, value }` remote envelope and the `settings.describe()` namespace view.
+- Import sources expanded from Codex to Codex, Claude, Claude Desktop, and OpenCode.
+- Added a model-catalog fallback, model probing, and loopback error surfacing.
+- Mounts into the native Models page footer slot and coexists with the built-in UI.
+
+**Fixes**
+
+- Batch import previously succeeded only for the first provider: the settings revision is now re-read after every successful write and used as the precondition for the next one.
+- Secret redaction changed from `sk-` shape matching to redaction by known secret **values**, so import responses and stderr never echo an API key.
+- `POST /import` now requires a same-origin `Origin` header; an oversized request body destroys the connection instead of being silently ignored.
+- If newer edits arrive while a reasoning save is in flight, the status reads "saved (unsaved changes)" rather than "saved".
+- Empty scans now distinguish "CCSwitch not installed / no profiles / database unreadable / Node too old" and echo the probed path.
+- `node:sqlite` is loaded lazily, so an unsupported Node version produces a readable message instead of a load failure.
+- All UI strings go through the zh/en message catalogue instead of hard-coded Chinese.
+
+The upstream copyright and license are kept unmodified in `LICENSE`; changed files carry a notice header and `NOTICE` records the modifications.
 
 ## Development and Verification
 
@@ -87,4 +113,4 @@ npm test
 npm run pack:check
 ```
 
-`npm run build` creates the DSH Host bundle and the Client bundle with the required `window.__ModuleLoader__.load` registration. The release package contains only `dist`, the patch, READMEs, and the license; source and tests are excluded.
+`npm run build` creates the DSH Host bundle and the Client bundle with the required `window.__ModuleLoader__.load` registration. The release package contains only `dist`, the patch, the READMEs, `NOTICE`, and the license; source and tests are excluded.

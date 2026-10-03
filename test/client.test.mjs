@@ -1,8 +1,12 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { registerReasoningSettings, SETTINGS_SECTION_ID } from '../src/client/registration.mjs'
+import { registerReasoningSettings, MODELS_FOOTER_SLOT } from '../src/client/registration.mjs'
 
-test('shadows the built-in models section and keeps refresh listeners', () => {
+test('mounts into the built-in footer seat without shadowing the models section', () => {
   const registrations = []
   const listeners = new Map()
   const ctx = {
@@ -19,16 +23,17 @@ test('shadows the built-in models section and keeps refresh listeners', () => {
   const importer = { scans: 0, scan() { this.scans += 1 } }
   const dispose = registerReasoningSettings(ctx, { controller, importer, component: 'Component', t: () => '' })
   assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].name, 'settings.section')
-  assert.equal(registrations[0].entry.options.id, SETTINGS_SECTION_ID)
-  assert.equal(registrations[0].entry.options.priority, -1)
-  assert.equal(listeners.size, 5)
+  assert.equal(registrations[0].name, MODELS_FOOTER_SLOT)
+  assert.equal(registrations[0].name, 'settings.models.footer')
+  assert.equal(registrations[0].entry.options.id, 'ccswitch-importer')
+  assert.equal(registrations[0].entry.options.priority, undefined)
+  assert.equal(registrations[0].entry.options.inject().controller, controller)
+  assert.equal(listeners.size, 4)
   listeners.get('settings/document-updated')()
   listeners.get('llm/adapters-updated')()
-  listeners.get('credentials/updated')()
+  listeners.get('credentials/record-updated')()
   listeners.get('credentials/reference-updated')()
-  listeners.get('connection/reset')()
-  assert.equal(controller.refreshes, 3)
+  assert.equal(controller.refreshes, 2)
   assert.equal(importer.scans, 2)
   dispose()
   assert.equal(listeners.size, 0)

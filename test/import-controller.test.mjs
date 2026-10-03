@@ -1,3 +1,7 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCCSwitchImportController } from '../src/client/import-controller.mjs'
@@ -48,4 +52,28 @@ test('non-2xx responses become an error state', async () => {
   })
   await assert.rejects(() => controller.scan(), /scan failed/)
   assert.equal(controller.getSnapshot().phase, 'error')
+})
+
+test('toggleSelectAll cycles all/none over importable rows only', async () => {
+  const controller = createCCSwitchImportController({
+    fetchImpl: async () => ({
+      ok: true,
+      async json() { return { profiles: [
+        { profileId: 'p1', status: 'new', credential: 'found' },
+        { profileId: 'p2', status: 'update', credential: 'found' },
+        { profileId: 'p3', status: 'unchanged', credential: 'found' },
+        { profileId: 'p4', status: 'blocked', credential: 'missing' },
+      ] } },
+    }),
+  })
+  await controller.scan()
+  // scan auto-selects importable rows
+  assert.deepEqual(controller.getSnapshot().selectedIds, ['p1', 'p2', 'p3'])
+  controller.toggleSelectAll() // all selected -> none
+  assert.deepEqual(controller.getSnapshot().selectedIds, [])
+  controller.toggleSelectAll() // none -> all importable (p4 excluded)
+  assert.deepEqual(controller.getSnapshot().selectedIds, ['p1', 'p2', 'p3'])
+  controller.toggleSelected('p1')
+  controller.toggleSelectAll() // partial -> all
+  assert.deepEqual(controller.getSnapshot().selectedIds, ['p1', 'p2', 'p3'])
 })

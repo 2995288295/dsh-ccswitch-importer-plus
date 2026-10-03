@@ -1,4 +1,9 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import { settingsMutation, updateModelReasoning } from "../domain/settings.mjs";
+import { REMOTE_SETTINGS_CONFLICT_CODE } from "../../lib/core/safety.js";
 
 export function createReasoningSettingsController(api) {
   let snapshot = { status: "idle", writable: false, revision: undefined, providers: {}, error: null };
@@ -16,13 +21,14 @@ export function createReasoningSettingsController(api) {
   const performRefresh = async () => {
     publish({ ...snapshot, status: "loading", error: null });
     try {
-      const response = await api.settings.describe({});
-      if (!response.result.ok) throw new Error(response.result.error.message);
-      const namespace = response.result.value.namespaces.find((entry) => entry.ns === "llm-pi-ai");
+      // 0.2.0 remote calls resolve to { ok: true, value } | { ok: false, error }.
+      const response = await api.settings.describe();
+      if (!response.ok) throw new Error(response.error.message);
+      const namespace = response.value.namespaces.find((entry) => entry.ns === "llm-pi-ai");
       const providers = namespace?.value?.providers ?? {};
       publish({
         status: "ready",
-        writable: response.result.value.writable === true,
+        writable: response.value.writable === true,
         revision: namespace?.revision,
         providers,
         error: null,
@@ -44,8 +50,14 @@ export function createReasoningSettingsController(api) {
       const before = snapshot.providers[route];
       const after = updateModelReasoning(before, modelId, mode, efforts);
       const mutation = settingsMutation(route, before, after);
-      const response = await api.settings.mutate({ ...mutation, expectedRevision: revisionAtExecution });
-      if (!response.result.ok) throw new Error(response.result.error.message);
+      const response = await api.settings.mutate(mutation.ns, mutation.ops, revisionAtExecution);
+      if (!response.ok) {
+        if (response.error.code === REMOTE_SETTINGS_CONFLICT_CODE) {
+          await performRefresh();
+          throw new Error(`settings conflict: ${response.error.message}`);
+        }
+        throw new Error(response.error.message);
+      }
       await performRefresh();
       return controller.getSnapshot();
     }),

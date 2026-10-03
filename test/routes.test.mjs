@@ -1,6 +1,10 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { makeRoutes, readJsonBody, isLoopbackRequest, safeError } from '../src/host/routes.mjs'
+import { makeRoutes, readJsonBody, isLoopbackRequest } from '../src/host/routes.mjs'
 
 function fakeReq(overrides = {}) {
   return {
@@ -27,6 +31,14 @@ function withBody(request, body) {
   })
 }
 
+function statusOf(res) {
+  return res.calls.find((call) => call[0] === 'head')[1]
+}
+
+function bodyOf(res) {
+  return JSON.parse(res.calls.find((call) => call[0] === 'end')[1])
+}
+
 test('scan route returns redacted summaries without secrets', async () => {
   const routes = makeRoutes({
     scan: async () => [{
@@ -39,12 +51,32 @@ test('scan route returns redacted summaries without secrets', async () => {
   const route = routes.find((item) => item.path === '/api/dsh-ccswitch/scan')
   const res = fakeRes()
   await route.handler(fakeReq(), res)
-  const body = JSON.parse(res.calls.find((call) => call[0] === 'end')[1])
+  const body = bodyOf(res)
   assert.ok(!JSON.stringify(body).includes('sk-SECRET-X'))
   assert.equal(body.profiles[0].credential, 'found')
   assert.equal(body.profiles[0].reasoningEffort, 'high')
   assert.equal(body.profiles[0].baseURL, 'https://example.test/v1')
   assert.ok(!JSON.stringify(body).includes('secret'))
+})
+
+test('scan surfaces why it found nothing, and drops unknown reasons', async () => {
+  const notInstalled = makeRoutes({
+    scan: async () => ({ profiles: [], reason: 'not-installed', dbPath: '/Users/u/.cc-switch/cc-switch.db' }),
+    isLoopback: () => true,
+  }).find((item) => item.path === '/api/dsh-ccswitch/scan')
+  const res = fakeRes()
+  await notInstalled.handler(fakeReq(), res)
+  assert.equal(bodyOf(res).source, 'not-installed')
+  assert.equal(bodyOf(res).probedPath, '/Users/u/.cc-switch/cc-switch.db')
+
+  const bogus = makeRoutes({
+    scan: async () => ({ profiles: [], reason: 'i-am-not-a-reason', dbPath: '/x' }),
+    isLoopback: () => true,
+  }).find((item) => item.path === '/api/dsh-ccswitch/scan')
+  const bogusRes = fakeRes()
+  await bogus.handler(fakeReq(), bogusRes)
+  assert.equal(bodyOf(bogusRes).source, undefined)
+  assert.equal(bodyOf(bogusRes).probedPath, undefined)
 })
 
 test('route failures return fixed safe messages', async () => {
@@ -55,7 +87,7 @@ test('route failures return fixed safe messages', async () => {
   const route = routes.find((item) => item.path === '/api/dsh-ccswitch/scan')
   const res = fakeRes()
   await route.handler(fakeReq(), res)
-  assert.deepEqual(JSON.parse(res.calls.find((call) => call[0] === 'end')[1]), { error: 'scan failed' })
+  assert.deepEqual(bodyOf(res), { error: 'scan failed' })
 })
 
 test('import route forwards only selected IDs and revision', async () => {
@@ -74,7 +106,76 @@ test('import route forwards only selected IDs and revision', async () => {
   assert.deepEqual(received.selectedIds, ['p-1'])
   assert.equal(received.expectedRevision, 3)
   assert.ok(!JSON.stringify(received).includes('sk-DO-NOT-TRUST'))
-  assert.equal(JSON.parse(res.calls.find((call) => call[0] === 'end')[1]).results[0].status, 'new')
+  assert.equal(bodyOf(res).results[0].status, 'new')
+})
+
+test('import errors redact credentials by value, not just by shape', async () => {
+  // Deliberately short and not `sk-` shaped: only value-based redaction catches it.
+  const relayKey = 'relay-key-ABCdef123'
+  const routes = makeRoutes({
+    scan: async () => [{ profileId: 'p-1', profileName: 'P1', apiKey: relayKey, models: [] }],
+    settings: {},
+    credentials: {},
+    importProfiles: async () => ([{
+      profileId: 'p-1', providerKey: 'ccs-p1-aaaaaaaa', status: 'failed',
+      error: `设置写入失败：relay rejected ${relayKey} for tenant`,
+    }]),
+    isLoopback: () => true,
+  })
+  const route = routes.find((item) => item.path === '/api/dsh-ccswitch/import')
+  const req = withBody(fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import', headers: { host: '127.0.0.1:5624', origin: 'http://127.0.0.1:5624' } }), JSON.stringify({ profileIds: ['p-1'] }))
+  const res = fakeRes()
+  await route.handler(req, res)
+  const raw = res.calls.find((call) => call[0] === 'end')[1]
+  assert.ok(!raw.includes(relayKey), 'import response leaked an unknown-shaped credential')
+  assert.ok(raw.includes('[redacted]'))
+  assert.equal(bodyOf(res).results[0].status, 'failed')
+})
+
+test('import errors still fall back to shape redaction for unknown profiles', async () => {
+  const longToken = 'A'.repeat(40)
+  const routes = makeRoutes({
+    scan: async () => [{ profileId: 'other', profileName: 'Other', apiKey: 'sk-x-aaaaaaaaaaaa', models: [] }],
+    settings: {},
+    credentials: {},
+    importProfiles: async () => ([{ profileId: 'p-1', status: 'failed', error: `boom ${longToken}` }]),
+    isLoopback: () => true,
+  })
+  const route = routes.find((item) => item.path === '/api/dsh-ccswitch/import')
+  const req = withBody(fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import', headers: { host: '127.0.0.1:5624', origin: 'http://127.0.0.1:5624' } }), JSON.stringify({ profileIds: ['p-1'] }))
+  const res = fakeRes()
+  await route.handler(req, res)
+  assert.ok(!res.calls.find((call) => call[0] === 'end')[1].includes(longToken))
+})
+
+test('state-changing requests must carry an Origin header', async () => {
+  const routes = makeRoutes({
+    scan: async () => [],
+    importProfiles: async () => [],
+    isLoopback: () => true,
+  })
+  const route = routes.find((item) => item.path === '/api/dsh-ccswitch/import')
+  const res = fakeRes()
+  await route.handler(withBody(fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import' }), JSON.stringify({ profileIds: [] })), res)
+  assert.equal(statusOf(res), 403)
+  assert.match(bodyOf(res).error, /Origin/)
+})
+
+test('a probe request never delays the plain import path', async () => {
+  let probed = false
+  const routes = makeRoutes({
+    scan: async () => [{ profileId: 'p-1', profileName: 'P1', apiKey: 'sk-a-aaaaaaaaaaaa', baseURL: 'https://x/v1', api: 'openai-completions', models: [{ id: 'm' }] }],
+    settings: {},
+    credentials: {},
+    importProfiles: async () => { probed = true; return [{ profileId: 'p-1', status: 'new' }] },
+    isLoopback: () => true,
+  })
+  const route = routes.find((item) => item.path === '/api/dsh-ccswitch/import')
+  const req = withBody(fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import', headers: { host: '127.0.0.1:5624', origin: 'http://127.0.0.1:5624' } }), JSON.stringify({ profileIds: ['p-1'] }))
+  const res = fakeRes()
+  await route.handler(req, res)
+  assert.equal(probed, true)
+  assert.equal(statusOf(res), 200)
 })
 
 test('loopback and same-origin fences reject unsafe requests', () => {
@@ -94,6 +195,12 @@ test('readJsonBody caps size and tolerates garbage', async () => {
   assert.deepEqual(await readJsonBody(ok), { a: 1 })
 })
 
-test('safeError returns a fixed message', () => {
-  assert.equal(safeError(new Error('bad sk-SECRET-X')), 'request failed')
+test('readJsonBody tears down the socket on an oversized body', async () => {
+  let destroyed = false
+  const big = {
+    destroy() { destroyed = true },
+    [Symbol.asyncIterator]: async function* () { yield Buffer.alloc(64 * 1024 + 1, 'a') },
+  }
+  assert.equal(await readJsonBody(big), undefined)
+  assert.equal(destroyed, true)
 })

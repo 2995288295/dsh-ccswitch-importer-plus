@@ -1,3 +1,7 @@
+// dsh-ccswitch-importer-plus — derivative of dsh-ccswitch-importer
+// (Apache-2.0, https://github.com/wtiaw/dsh-ccswitch-importer).
+// Changed for DSH 0.2.0-rc.2. See NOTICE and the README section
+// "与上游的差异 / Differences from upstream".
 function defaultFetch(url, init) {
   return globalThis.fetch(url, init)
 }
@@ -17,6 +21,8 @@ export function createCCSwitchImportController({
     selectedIds: [],
     results: [],
     error: null,
+    source: undefined,
+    probedPath: undefined,
   }
   const listeners = new Set()
   const publish = (next) => {
@@ -49,13 +55,35 @@ export function createCCSwitchImportController({
       else selected.add(profileId)
       controller.setSelectedIds([...selected])
     },
+    selectAll: () => {
+      controller.setSelectedIds(snapshot.profiles.filter(importable).map((profile) => profile.profileId))
+    },
+    selectNone: () => {
+      controller.setSelectedIds([])
+    },
+    toggleSelectAll: () => {
+      const importableIds = snapshot.profiles.filter(importable).map((profile) => profile.profileId)
+      const allSelected = importableIds.length > 0 && importableIds.every((id) => snapshot.selectedIds.includes(id))
+      if (allSelected) controller.selectNone()
+      else controller.selectAll()
+    },
     scan: async () => {
       publish({ ...snapshot, phase: 'loading', error: null })
       try {
         const body = await request('/api/dsh-ccswitch/scan')
         const profiles = Array.isArray(body.profiles) ? body.profiles : []
         const selectedIds = profiles.filter(importable).map((profile) => profile.profileId)
-        publish({ phase: 'ready', profiles, selectedIds, results: [], error: null })
+        // Carry the empty-scan reason so the UI can say *why* there is nothing
+        // to import instead of showing one generic message.
+        publish({
+          phase: 'ready',
+          profiles,
+          selectedIds,
+          results: [],
+          error: null,
+          source: typeof body.source === 'string' ? body.source : undefined,
+          probedPath: typeof body.probedPath === 'string' ? body.probedPath : undefined,
+        })
         return snapshot
       } catch (error) {
         publish({ ...snapshot, phase: 'error', error: error instanceof Error ? error.message : String(error) })

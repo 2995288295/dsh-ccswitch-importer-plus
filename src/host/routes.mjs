@@ -165,7 +165,30 @@ function normalizeScanResult(scanned) {
   }
 }
 
-function methodFence(request, response, isLoopback, method, { requireOrigin = false } = {}) {
+// A state-changing request must prove it came from this app's own page.
+// Requiring an `Origin` header alone was wrong: a browser is allowed to omit it
+// on same-origin POSTs, and the one that serves this app does — which is why
+// "Test connection" answered `missing Origin`. Three independent proofs are
+// accepted instead. A cross-site caller can produce none of them: `Origin` is
+// compared against `Host` by isLoopbackRequest, `Sec-Fetch-Site` is set by the
+// browser and cannot be forged by script, and a custom header forces a CORS
+// preflight that this route never answers.
+export const SAME_ORIGIN_HEADER = 'x-dsh-ccswitch-origin'
+export const SAME_ORIGIN_VALUE = 'same-origin'
+
+function sameOriginSignals(request) {
+  const headers = request.headers ?? {}
+  const origin = typeof headers.origin === 'string' ? headers.origin.trim() : ''
+  const site = typeof headers['sec-fetch-site'] === 'string' ? headers['sec-fetch-site'].trim().toLowerCase() : ''
+  const marker = typeof headers[SAME_ORIGIN_HEADER] === 'string' ? headers[SAME_ORIGIN_HEADER].trim() : ''
+  let proof
+  if (origin.length > 0) proof = 'origin'
+  else if (site === 'same-origin') proof = 'sec-fetch-site'
+  else if (marker === SAME_ORIGIN_VALUE) proof = 'marker'
+  return { origin, site, marker, proof }
+}
+
+function methodFence(request, response, isLoopback, method, { requireSameOrigin = false } = {}) {
   if (!isLoopback(request)) {
     writeJson(response, 403, { error: 'forbidden: loopback and same-origin only' })
     return false
@@ -174,11 +197,17 @@ function methodFence(request, response, isLoopback, method, { requireOrigin = fa
     writeJson(response, 405, { error: 'method not allowed' })
     return false
   }
-  // A missing Origin is tolerated for reads (curl, CLI, same-origin fetches),
-  // but a state-changing request must prove it came from a real page origin.
-  if (requireOrigin && typeof request.headers?.origin !== 'string') {
-    writeJson(response, 403, { error: 'forbidden: missing Origin on a state-changing request' })
-    return false
+  if (requireSameOrigin) {
+    const { origin, site, marker, proof } = sameOriginSignals(request)
+    if (proof === undefined) {
+      // Report what actually arrived: a bare rejection here is very hard to
+      // diagnose from the browser side.
+      writeJson(response, 403, {
+        error: 'forbidden: state-changing requests must come from the app page',
+        saw: { origin: origin.length > 0, site: site.length > 0 ? site : null, marker: marker.length > 0 },
+      })
+      return false
+    }
   }
   return true
 }
@@ -216,7 +245,7 @@ export function makeRoutes(deps = {}) {
       kind: 'exact',
       path: `${API_BASE}/import`,
       handler: async (request, response) => {
-        if (!methodFence(request, response, isLoopback, 'POST', { requireOrigin: true })) return
+        if (!methodFence(request, response, isLoopback, 'POST', { requireSameOrigin: true })) return
         const body = await readJsonBody(request)
         if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== 'string')) {
           writeJson(response, 400, { error: 'body must be { profileIds: string[], expectedRevision?: number, probe?: boolean }' })
@@ -272,7 +301,7 @@ export function makeRoutes(deps = {}) {
       kind: 'exact',
       path: `${API_BASE}/probe`,
       handler: async (request, response) => {
-        if (!methodFence(request, response, isLoopback, 'POST', { requireOrigin: true })) return
+        if (!methodFence(request, response, isLoopback, 'POST', { requireSameOrigin: true })) return
         const body = await readJsonBody(request)
         if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== 'string')) {
           writeJson(response, 400, { error: 'body must be { profileIds: string[] }' })

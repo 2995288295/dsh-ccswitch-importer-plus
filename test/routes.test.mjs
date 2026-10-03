@@ -148,17 +148,34 @@ test('import errors still fall back to shape redaction for unknown profiles', as
   assert.ok(!res.calls.find((call) => call[0] === 'end')[1].includes(longToken))
 })
 
-test('state-changing requests must carry an Origin header', async () => {
+test('a state-changing request may prove it is same-origin in three ways', async () => {
   const routes = makeRoutes({
     scan: async () => [],
     importProfiles: async () => [],
     isLoopback: () => true,
   })
   const route = routes.find((item) => item.path === '/api/dsh-ccswitch/import')
-  const res = fakeRes()
-  await route.handler(withBody(fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import' }), JSON.stringify({ profileIds: [] })), res)
-  assert.equal(statusOf(res), 403)
-  assert.match(bodyOf(res).error, /Origin/)
+  const post = async (headers) => {
+    const req = withBody(
+      fakeReq({ method: 'POST', url: '/api/dsh-ccswitch/import', headers: { host: '127.0.0.1:5624', ...headers } }),
+      JSON.stringify({ profileIds: [] }),
+    )
+    const res = fakeRes()
+    await route.handler(req, res)
+    return res
+  }
+
+  // Browsers may omit `Origin` on a same-origin POST but always set this.
+  assert.equal(statusOf(await post({ 'sec-fetch-site': 'same-origin' })), 200)
+  // Both our own client writes send this marker.
+  assert.equal(statusOf(await post({ 'x-dsh-ccswitch-origin': 'same-origin' })), 200)
+  assert.equal(statusOf(await post({ origin: 'http://127.0.0.1:5624' })), 200)
+
+  // No proof at all: rejected, and the body says what actually arrived.
+  const bare = await post({})
+  assert.equal(statusOf(bare), 403)
+  assert.match(bodyOf(bare).error, /app page/)
+  assert.deepEqual(bodyOf(bare).saw, { origin: false, site: null, marker: false })
 })
 
 test('a probe request never delays the plain import path', async () => {

@@ -122,6 +122,13 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 - 这次补发只发生在免费检查答不上来的时候，且上游不可达（超时/网络错误）或该 provider 没有已知模型 ID 时不会发第二次请求；导入路径的模型加宽仍然只走 `/models`，因此不会因为探测而多花钱。
 - 新增宿主半未加载的识别：如果探测请求本身返回 `401`/`404`（宿主还没加载新路由，页面却已经是新的客户端 bundle），行内会提示「宿主未加载该接口，重启 DSH 后重试」，而不是把它误读成上游故障。
 
+**`0.2.0-rc.6` 修复「测试连接」被同源围栏拦下**
+
+- 修掉一个我自己引入的缺陷：写操作原本**必须有 `Origin` 头**，但浏览器在同源 POST 上是允许不发 `Origin` 的（这个界面就是这样），于是每次点击都只得到 `forbidden: missing Origin on a state-changing request`，看起来就像探测接口坏了。现在改为接受三种等价证明：`Origin` 与 `Host` 一致、`Sec-Fetch-Site: same-origin`（浏览器设置，脚本无法伪造）、或客户端自己带的 `x-dsh-ccswitch-origin` 标记头。
+- 这三种证明跨站页面都给不出来：自定义头会触发 CORS 预检，而这条路由不响应预检；`Sec-Fetch-Site` 由浏览器填写。因此围栏没有被削弱，只是不再误伤同源页面。
+- 被拒绝时响应体现在会附带 `saw: { origin, site, marker }`，直接说明这次请求到底带了什么，避免再对着一个 `forbidden` 猜。
+- 同样的修复也覆盖了 `/import`：它此前有完全一样的问题。
+
 上游版权与许可证原样保留在 `LICENSE`；改动声明见 `NOTICE`，且每个被改动的源文件头部都带改动提示。
 
 ## 开发与验证

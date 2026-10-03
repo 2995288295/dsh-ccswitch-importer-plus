@@ -1237,7 +1237,20 @@ function normalizeScanResult(scanned) {
     dbPath: scanned?.dbPath
   };
 }
-function methodFence(request, response, isLoopback, method, { requireOrigin = false } = {}) {
+var SAME_ORIGIN_HEADER = "x-dsh-ccswitch-origin";
+var SAME_ORIGIN_VALUE = "same-origin";
+function sameOriginSignals(request) {
+  const headers = request.headers ?? {};
+  const origin = typeof headers.origin === "string" ? headers.origin.trim() : "";
+  const site = typeof headers["sec-fetch-site"] === "string" ? headers["sec-fetch-site"].trim().toLowerCase() : "";
+  const marker = typeof headers[SAME_ORIGIN_HEADER] === "string" ? headers[SAME_ORIGIN_HEADER].trim() : "";
+  let proof;
+  if (origin.length > 0) proof = "origin";
+  else if (site === "same-origin") proof = "sec-fetch-site";
+  else if (marker === SAME_ORIGIN_VALUE) proof = "marker";
+  return { origin, site, marker, proof };
+}
+function methodFence(request, response, isLoopback, method, { requireSameOrigin = false } = {}) {
   if (!isLoopback(request)) {
     writeJson(response, 403, { error: "forbidden: loopback and same-origin only" });
     return false;
@@ -1246,9 +1259,15 @@ function methodFence(request, response, isLoopback, method, { requireOrigin = fa
     writeJson(response, 405, { error: "method not allowed" });
     return false;
   }
-  if (requireOrigin && typeof request.headers?.origin !== "string") {
-    writeJson(response, 403, { error: "forbidden: missing Origin on a state-changing request" });
-    return false;
+  if (requireSameOrigin) {
+    const { origin, site, marker, proof } = sameOriginSignals(request);
+    if (proof === void 0) {
+      writeJson(response, 403, {
+        error: "forbidden: state-changing requests must come from the app page",
+        saw: { origin: origin.length > 0, site: site.length > 0 ? site : null, marker: marker.length > 0 }
+      });
+      return false;
+    }
   }
   return true;
 }
@@ -1284,7 +1303,7 @@ function makeRoutes(deps = {}) {
       kind: "exact",
       path: `${API_BASE}/import`,
       handler: async (request, response) => {
-        if (!methodFence(request, response, isLoopback, "POST", { requireOrigin: true })) return;
+        if (!methodFence(request, response, isLoopback, "POST", { requireSameOrigin: true })) return;
         const body = await readJsonBody(request);
         if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== "string")) {
           writeJson(response, 400, { error: "body must be { profileIds: string[], expectedRevision?: number, probe?: boolean }" });
@@ -1334,7 +1353,7 @@ function makeRoutes(deps = {}) {
       kind: "exact",
       path: `${API_BASE}/probe`,
       handler: async (request, response) => {
-        if (!methodFence(request, response, isLoopback, "POST", { requireOrigin: true })) return;
+        if (!methodFence(request, response, isLoopback, "POST", { requireSameOrigin: true })) return;
         const body = await readJsonBody(request);
         if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== "string")) {
           writeJson(response, 400, { error: "body must be { profileIds: string[] }" });

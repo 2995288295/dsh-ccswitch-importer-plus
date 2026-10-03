@@ -6,6 +6,18 @@ function defaultFetch(url, init) {
   return globalThis.fetch(url, init)
 }
 
+// The Host accepts this header in place of an `Origin` header, which a browser
+// is free to omit on a same-origin POST — exactly how "Test connection" turned
+// into `missing Origin`. A cross-site page cannot send it: a custom header
+// forces a CORS preflight that the Host never answers.
+const SAME_ORIGIN_HEADER = 'x-dsh-ccswitch-origin'
+const SAME_ORIGIN_VALUE = 'same-origin'
+
+/** Headers for every state-changing request; see SAME_ORIGIN_HEADER above. */
+function writeHeaders() {
+  return { 'content-type': 'application/json', [SAME_ORIGIN_HEADER]: SAME_ORIGIN_VALUE }
+}
+
 function importable(profile) {
   return profile.status !== 'blocked' && profile.credential === 'found'
 }
@@ -127,7 +139,7 @@ export function createCCSwitchImportController({
       try {
         const body = await request('/api/dsh-ccswitch/probe', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: writeHeaders(),
           body: JSON.stringify({ profileIds: [profileId] }),
         })
         const results = Array.isArray(body.results) ? body.results : []
@@ -185,7 +197,7 @@ export function createCCSwitchImportController({
       try {
         const body = await request('/api/dsh-ccswitch/import', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: writeHeaders(),
           body: JSON.stringify({ profileIds: snapshot.selectedIds, expectedRevision: getRevision() }),
         })
         const results = Array.isArray(body.results) ? body.results : []

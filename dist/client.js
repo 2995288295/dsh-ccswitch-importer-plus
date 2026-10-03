@@ -227,6 +227,11 @@ window.__ModuleLoader__.load({
 		function defaultFetch(url, init) {
 		  return globalThis.fetch(url, init);
 		}
+		var SAME_ORIGIN_HEADER = "x-dsh-ccswitch-origin";
+		var SAME_ORIGIN_VALUE = "same-origin";
+		function writeHeaders() {
+		  return { "content-type": "application/json", [SAME_ORIGIN_HEADER]: SAME_ORIGIN_VALUE };
+		}
 		function importable(profile) {
 		  return profile.status !== "blocked" && profile.credential === "found";
 		}
@@ -337,7 +342,7 @@ window.__ModuleLoader__.load({
 		      try {
 		        const body = await request("/api/dsh-ccswitch/probe", {
 		          method: "POST",
-		          headers: { "content-type": "application/json" },
+		          headers: writeHeaders(),
 		          body: JSON.stringify({ profileIds: [profileId] })
 		        });
 		        const results = Array.isArray(body.results) ? body.results : [];
@@ -393,7 +398,7 @@ window.__ModuleLoader__.load({
 		      try {
 		        const body = await request("/api/dsh-ccswitch/import", {
 		          method: "POST",
-		          headers: { "content-type": "application/json" },
+		          headers: writeHeaders(),
 		          body: JSON.stringify({ profileIds: snapshot.selectedIds, expectedRevision: getRevision() })
 		        });
 		        const results = Array.isArray(body.results) ? body.results : [];

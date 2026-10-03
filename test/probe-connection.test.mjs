@@ -65,8 +65,8 @@ function probeRoute(deps = {}) {
 }
 
 /** POST the given body at the probe route and return the response recorder. */
-async function postProbe(route, body, { omitOrigin = false } = {}) {
-  const headers = { host: '127.0.0.1:5624' }
+async function postProbe(route, body, { omitOrigin = false, extraHeaders = {} } = {}) {
+  const headers = { host: '127.0.0.1:5624', ...extraHeaders }
   // `omitOrigin` is a flag, not `origin: undefined`: a destructuring default
   // would quietly put the header back and the fence test would pass vacuously.
   if (!omitOrigin) headers.origin = 'http://127.0.0.1:5624'
@@ -177,7 +177,7 @@ test('probeModels still degrades to a warning and widens models on success', asy
   assert.match(bad.warnings[0], /网络错误/)
 })
 
-test('the probe route is POST-only, Origin-fenced and never imports anything', async () => {
+test('the probe route is POST-only, same-origin-fenced and never imports anything', async () => {
   let imports = 0
   const route = probeRoute({
     scan: async () => [profileRow()],
@@ -198,8 +198,15 @@ test('the probe route is POST-only, Origin-fenced and never imports anything', a
   })
 
   const noOrigin = await postProbe(route, JSON.stringify({ profileIds: ['p1'] }), { omitOrigin: true })
-  assert.equal(statusOf(noOrigin), 403)
-  assert.match(bodyOf(noOrigin).error, /Origin/)
+  assert.equal(statusOf(noOrigin), 403, 'a write with no same-origin proof is rejected')
+  assert.match(bodyOf(noOrigin).error, /app page/)
+
+  // Exactly how the browser calls it: no Origin, but our own marker header.
+  const marked = await postProbe(route, JSON.stringify({ profileIds: ['p1'] }), {
+    omitOrigin: true,
+    extraHeaders: { 'x-dsh-ccswitch-origin': 'same-origin' },
+  })
+  assert.equal(statusOf(marked), 200)
 
   const get = fakeRes()
   await route.handler(fakeReq(), get)

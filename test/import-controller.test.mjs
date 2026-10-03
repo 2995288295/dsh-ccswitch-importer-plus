@@ -42,6 +42,9 @@ test('import posts selected IDs and settings revision', async () => {
   await controller.importSelected()
   assert.equal(request.url, '/api/dsh-ccswitch/import')
   assert.deepEqual(JSON.parse(request.init.body), { profileIds: ['p1'], expectedRevision: 12 })
+  // The Host accepts this in place of an Origin header the browser may omit.
+  assert.equal(request.init.headers['x-dsh-ccswitch-origin'], 'same-origin')
+  assert.equal(request.init.headers['content-type'], 'application/json')
   assert.equal(refreshed, 1)
   assert.equal(controller.getSnapshot().results[0].status, 'new')
 })

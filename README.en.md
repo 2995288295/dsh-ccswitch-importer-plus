@@ -122,6 +122,13 @@ Relative to [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-
 - The extra request only happens when the free check was inconclusive: an unreachable upstream (timeout/network) or a provider with no known model id never triggers a second call, and the import path still widens the model list from `/models` alone — so probing never quietly costs more.
 - A Host that is behind its bundle is now recognised: if the probe request itself answers `401`/`404` (the running Host has no such route while the page already runs the new client), the row says "the host has not loaded this endpoint — restart DSH" instead of misreporting it as an upstream failure.
 
+**`0.2.0-rc.6` the same-origin fence no longer blocks "Test connection"**
+
+- Fixes a defect of my own: writes used to **require an `Origin` header**, but a browser is allowed to omit it on a same-origin POST — this UI does — so every click came back as `forbidden: missing Origin on a state-changing request` and the probe looked broken. Three equivalent proofs are now accepted: `Origin` matching `Host`, `Sec-Fetch-Site: same-origin` (set by the browser, unforgeable from script), or the client's own `x-dsh-ccswitch-origin` marker.
+- A cross-site page can produce none of them: a custom header forces a CORS preflight this route never answers, and `Sec-Fetch-Site` is written by the browser. The fence is not weakened, only no longer aimed at the app's own page.
+- A rejection now carries `saw: { origin, site, marker }` in the body, so the next failure says what actually arrived instead of leaving a bare `forbidden`.
+- `/import` had exactly the same problem and is fixed with it.
+
 The upstream copyright and license are kept unmodified in `LICENSE`; changed files carry a notice header and `NOTICE` records the modifications.
 
 ## Development and Verification

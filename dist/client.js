@@ -230,6 +230,30 @@ window.__ModuleLoader__.load({
 		function importable(profile) {
 		  return profile.status !== "blocked" && profile.credential === "found";
 		}
+		var PROBE_REASONS = /* @__PURE__ */ new Set(["ok", "empty", "http-error", "timeout", "network", "no-credentials"]);
+		function probeNumber(value) {
+		  return Number.isInteger(value) && value >= 0 ? Math.min(value, 6e5) : 0;
+		}
+		function sanitizeProbe(result) {
+		  return {
+		    ok: result?.ok === true,
+		    reason: PROBE_REASONS.has(result?.reason) ? result.reason : "network",
+		    httpStatus: Number.isInteger(result?.httpStatus) && result.httpStatus > 0 && result.httpStatus < 1e3 ? result.httpStatus : void 0,
+		    latencyMs: probeNumber(result?.latencyMs),
+		    discoveredCount: probeNumber(result?.discoveredCount),
+		    addedCount: probeNumber(result?.addedCount),
+		    modelCount: probeNumber(result?.modelCount),
+		    message: typeof result?.message === "string" ? result.message.slice(0, 300) : ""
+		  };
+		}
+		function pruneProbes(probes, profiles) {
+		  const ids = new Set(profiles.map((profile) => profile.profileId));
+		  const next = {};
+		  for (const [id, value] of Object.entries(probes ?? {})) {
+		    if (ids.has(id)) next[id] = value;
+		  }
+		  return next;
+		}
 		function createCCSwitchImportController({
 		  fetchImpl = defaultFetch,
 		  getRevision = () => void 0,
@@ -241,6 +265,7 @@ window.__ModuleLoader__.load({
 		    profiles: [],
 		    selectedIds: [],
 		    results: [],
+		    probes: {},
 		    error: null,
 		    source: void 0,
 		    probedPath: void 0
@@ -292,6 +317,37 @@ window.__ModuleLoader__.load({
 		      publish({ ...snapshot, results: [] });
 		    },
 		    /**
+		     * Test one row's endpoint without importing anything: the Host only reads
+		     * `{baseURL}/models`, so this never touches settings or credentials.
+		     */
+		    probeOne: async (profileId) => {
+		      const profile = snapshot.profiles.find((item) => item.profileId === profileId);
+		      if (!profile || !importable(profile)) return void 0;
+		      if (snapshot.probes?.[profileId]?.phase === "testing") return void 0;
+		      const setProbe = (value) => {
+		        publish({ ...snapshot, probes: { ...snapshot.probes, [profileId]: value } });
+		      };
+		      setProbe({ phase: "testing" });
+		      try {
+		        const body = await request("/api/dsh-ccswitch/probe", {
+		          method: "POST",
+		          headers: { "content-type": "application/json" },
+		          body: JSON.stringify({ profileIds: [profileId] })
+		        });
+		        const results = Array.isArray(body.results) ? body.results : [];
+		        const result = results.find((item) => item.profileId === profileId) ?? results[0];
+		        if (!result) {
+		          setProbe({ phase: "error", message: "" });
+		          return void 0;
+		        }
+		        setProbe({ phase: "done", ...sanitizeProbe(result) });
+		        return result;
+		      } catch (error) {
+		        setProbe({ phase: "error", message: error instanceof Error ? error.message : String(error) });
+		        return void 0;
+		      }
+		    },
+		    /**
 		     * `keepResults` is for the refresh that follows an import: the report the
 		     * user is reading must survive, otherwise the rows that were just imported
 		     * still show "ready to import" while the summary of what happened vanishes.
@@ -314,6 +370,7 @@ window.__ModuleLoader__.load({
 		          profiles,
 		          selectedIds,
 		          results: keepResults ? snapshot.results : [],
+		          probes: pruneProbes(snapshot.probes, profiles),
 		          error: null,
 		          source: typeof body.source === "string" ? body.source : void 0,
 		          probedPath: typeof body.probedPath === "string" ? body.probedPath : void 0
@@ -394,6 +451,16 @@ window.__ModuleLoader__.load({
 		    "importer.blocked.unsupported-opencode-adapter": "\u6682\u4E0D\u652F\u6301\u7684 opencode \u9002\u914D\u5668\uFF1A{detail}",
 		    "importer.blocked.duplicate-provider-key": "\u672C\u6279\u91CC provider \u952E\u91CD\u590D\uFF1A{detail}",
 		    "importer.blocked.blocked": "\u8BE5\u914D\u7F6E\u65E0\u6CD5\u5BFC\u5165",
+		    "importer.probe.test": "\u6D4B\u8BD5\u8FDE\u63A5",
+		    "importer.probe.testAria": "\u6D4B\u8BD5 {name} \u7684\u8FDE\u63A5",
+		    "importer.probe.testing": "\u6D4B\u8BD5\u4E2D\u2026",
+		    "importer.probe.ok": "\u8FDE\u901A \xB7 {count} \u4E2A\u6A21\u578B \xB7 {ms}ms",
+		    "importer.probe.empty": "\u8FDE\u901A \xB7 \u4E0A\u6E38\u6CA1\u8FD4\u56DE\u6A21\u578B",
+		    "importer.probe.http-error": "\u5931\u8D25 \xB7 HTTP {status}",
+		    "importer.probe.no-credentials": "\u65E0\u6CD5\u6D4B\u8BD5\uFF1A\u7F3A\u5C11\u51ED\u636E\u6216 base URL",
+		    "importer.probe.timeout": "\u5931\u8D25 \xB7 \u8D85\u65F6",
+		    "importer.probe.network": "\u5931\u8D25 \xB7 \u7F51\u7EDC\u9519\u8BEF",
+		    "importer.probe.requestFailed": "\u5931\u8D25 \xB7 {message}",
 		    "reasoning.title": "\u6A21\u578B\u63A8\u7406",
 		    "reasoning.intro": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\u3002",
 		    "reasoning.hintExpanded": "\u4E3A\u81EA\u5B9A\u4E49 provider \u7684\u6BCF\u4E2A\u6A21\u578B\u8BBE\u7F6E\u63A8\u7406\u7B49\u7EA7\uFF1B\u4FDD\u5B58\u540E\u5373\u53EF\u5728\u6A21\u578B\u9009\u62E9\u5668\u4E2D\u5207\u6362\u3002",
@@ -472,6 +539,16 @@ window.__ModuleLoader__.load({
 		    "importer.blocked.unsupported-opencode-adapter": "unsupported opencode adapter: {detail}",
 		    "importer.blocked.duplicate-provider-key": "duplicate provider key in this batch: {detail}",
 		    "importer.blocked.blocked": "this profile cannot be imported",
+		    "importer.probe.test": "Test connection",
+		    "importer.probe.testAria": "Test the connection for {name}",
+		    "importer.probe.testing": "Testing\u2026",
+		    "importer.probe.ok": "connected \xB7 {count} models \xB7 {ms}ms",
+		    "importer.probe.empty": "connected \xB7 upstream returned no models",
+		    "importer.probe.http-error": "failed \xB7 HTTP {status}",
+		    "importer.probe.no-credentials": "cannot test: missing credential or base URL",
+		    "importer.probe.timeout": "failed \xB7 timed out",
+		    "importer.probe.network": "failed \xB7 network error",
+		    "importer.probe.requestFailed": "failed \xB7 {message}",
 		    "reasoning.title": "Model reasoning",
 		    "reasoning.intro": "Configure reasoning levels for every model of your custom providers.",
 		    "reasoning.hintExpanded": "Configure reasoning levels per model; they become selectable in the model picker after saving.",
@@ -1048,6 +1125,31 @@ window.__ModuleLoader__.load({
 		  if (result.status === "skipped") return tr("importer.resultSkipped", "\u672A\u9009\u62E9\uFF0C\u6216\u8BE5\u914D\u7F6E\u4E0D\u53EF\u5BFC\u5165");
 		  return "";
 		}
+		var PROBE_FALLBACK = {
+		  ok: "\u8FDE\u901A \xB7 {count} \u4E2A\u6A21\u578B \xB7 {ms}ms",
+		  empty: "\u8FDE\u901A \xB7 \u4E0A\u6E38\u6CA1\u8FD4\u56DE\u6A21\u578B",
+		  "http-error": "\u5931\u8D25 \xB7 HTTP {status}",
+		  "no-credentials": "\u65E0\u6CD5\u6D4B\u8BD5\uFF1A\u7F3A\u5C11\u51ED\u636E\u6216 base URL",
+		  timeout: "\u5931\u8D25 \xB7 \u8D85\u65F6",
+		  network: "\u5931\u8D25 \xB7 \u7F51\u7EDC\u9519\u8BEF"
+		};
+		function probeLabel(probe, tr) {
+		  if (probe?.phase === "error") {
+		    return tr("importer.probe.requestFailed", "\u5931\u8D25 \xB7 {message}", { message: probe.message ?? "" });
+		  }
+		  const reason = typeof probe?.reason === "string" && PROBE_FALLBACK[probe.reason] ? probe.reason : "network";
+		  return tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
+		    count: probe?.modelCount ?? 0,
+		    ms: probe?.latencyMs ?? 0,
+		    status: probe?.httpStatus ?? 0
+		  });
+		}
+		function probeKind(probe) {
+		  return probe?.phase !== "error" && probe?.ok === true ? "ok" : "error";
+		}
+		function domIdPart(value) {
+		  return String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 60);
+		}
 		function CCSwitchImportSection({ controller, collapse, setCollapse, t }) {
 		  const tr = makeTranslator(t);
 		  if (!controller) return null;
@@ -1149,23 +1251,31 @@ window.__ModuleLoader__.load({
 		            )
 		          )
 		        ),
-		        ...profiles.map((profile) => {
+		        ...profiles.map((profile, index) => {
 		          const selectable = isSelectable(profile);
+		          const probe = snapshot.probes?.[profile.profileId];
+		          const testing = probe?.phase === "testing";
+		          const canProbe = selectable && Boolean(profile.baseURL);
+		          const checkboxId = `dsh-ccswitch-import-select-${index}-${domIdPart(profile.profileId)}`;
 		          return h2(
-		            "label",
+		            "div",
 		            {
 		              key: profile.profileId,
 		              className: "dsh-ccswitch-import__row" + (selectable ? "" : " dsh-ccswitch-import__row--blocked")
 		            },
 		            h2("input", {
 		              type: "checkbox",
+		              id: checkboxId,
 		              checked: selected.has(profile.profileId),
 		              disabled: !selectable || busy,
 		              onChange: () => controller.toggleSelected(profile.profileId)
 		            }),
+		            // The row is a plain container now and the text is a real <label>
+		            // for the checkbox: a button inside a wrapping <label> would also
+		            // toggle the checkbox when clicked.
 		            h2(
-		              "span",
-		              { className: "dsh-ccswitch-import__content" },
+		              "label",
+		              { htmlFor: checkboxId, className: "dsh-ccswitch-import__content" },
 		              h2(
 		                "span",
 		                { className: "dsh-ccswitch-import__primary-line" },
@@ -1183,7 +1293,25 @@ window.__ModuleLoader__.load({
 		                Array.isArray(profile.warnings) && profile.warnings.length > 0 ? h2("span", { className: "dsh-ccswitch-import__warnings" }, profile.warnings.join("\uFF1B")) : null
 		              )
 		            ),
-		            h2("span", { className: badgeClass(profile.status) }, statusLabel(profile.status, tr))
+		            h2(
+		              "span",
+		              { className: "dsh-ccswitch-import__row-extras" },
+		              canProbe ? h2("button", {
+		                type: "button",
+		                className: "dsh-ccswitch-import__link dsh-ccswitch-import__probe-btn",
+		                disabled: testing || busy,
+		                "aria-label": tr("importer.probe.testAria", "\u6D4B\u8BD5 {name} \u7684\u8FDE\u63A5", { name: profile.profileName || profile.profileId }),
+		                onClick: () => {
+		                  Promise.resolve(controller.probeOne(profile.profileId)).catch(() => {
+		                  });
+		                }
+		              }, testing ? tr("importer.probe.testing", "\u6D4B\u8BD5\u4E2D\u2026") : tr("importer.probe.test", "\u6D4B\u8BD5\u8FDE\u63A5")) : null,
+		              probe && !testing ? h2("span", {
+		                role: "status",
+		                className: `dsh-ccswitch-import__probe dsh-ccswitch-import__probe--${probeKind(probe)}`
+		              }, probeLabel(probe, tr)) : null,
+		              h2("span", { className: badgeClass(profile.status) }, statusLabel(profile.status, tr))
+		            )
 		          );
 		        })
 		      ),
@@ -1357,7 +1485,8 @@ window.__ModuleLoader__.load({
 		.dsh-ccswitch-import__result-detail{min-width:0;color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere;}
 		.dsh-ccswitch-import__result--failed .dsh-ccswitch-import__result-detail{color:var(--dsw-alias-state-error-primary);}
 		.dsh-reasoning-levels__custom{color:var(--dsw-alias-brand-primary);font-size:11px;line-height:18px;white-space:nowrap;}
-		@media (max-width:640px){[role='dialog']:has(.dsh-ccswitch-import)>nav{flex:0 0 56px;width:56px;min-width:56px;}[role='dialog']:has(.dsh-ccswitch-import)>nav button{width:40px;min-width:40px;padding:0;justify-content:center;}[role='dialog']:has(.dsh-ccswitch-import)>nav button>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}[role='dialog']:has(.dsh-ccswitch-import)>div{min-width:0;}.dsh-ccswitch-import__header{flex-direction:column;}.dsh-ccswitch-import__header-actions{width:100%;justify-content:space-between;}.dsh-ccswitch-import__header-actions .dsh-ccswitch-import__actions{flex:1;}.dsh-ccswitch-import__actions{width:100%;flex-direction:column;align-items:stretch;}.dsh-ccswitch-import__actions button{width:100%;}.dsh-ccswitch-import__row{grid-template-columns:auto minmax(0,1fr);min-width:0;}.dsh-ccswitch-import__content{min-width:0;}.dsh-ccswitch-import__badge{grid-column:2;justify-self:start;}.dsh-reasoning-model__header{align-items:stretch;flex-direction:column;gap:10px;padding:10px;}.dsh-reasoning-model__mode-area{width:100%;justify-content:space-between;}.dsh-reasoning-model__body{padding:10px;}.dsh-reasoning-model__footer{padding:9px 10px;}.dsh-reasoning-levels__heading{align-items:flex-start;}.dsh-reasoning-levels__options{gap:6px;}.dsh-reasoning-custom__body{grid-template-columns:minmax(0,1fr);}}`;
+		.dsh-ccswitch-import__row-extras{display:flex;align-items:center;gap:8px;min-width:0;justify-self:end;}.dsh-ccswitch-import__probe-btn{white-space:nowrap;}.dsh-ccswitch-import__probe-btn[disabled]{color:var(--dsw-alias-label-dimmed);cursor:default;text-decoration:none;}.dsh-ccswitch-import__probe{font-size:11px;line-height:16px;white-space:nowrap;color:var(--dsw-alias-label-tertiary);}.dsh-ccswitch-import__probe--ok{color:var(--dsw-alias-state-business-primary);}.dsh-ccswitch-import__probe--error{color:var(--dsw-alias-state-error-primary);}
+		@media (max-width:640px){[role='dialog']:has(.dsh-ccswitch-import)>nav{flex:0 0 56px;width:56px;min-width:56px;}[role='dialog']:has(.dsh-ccswitch-import)>nav button{width:40px;min-width:40px;padding:0;justify-content:center;}[role='dialog']:has(.dsh-ccswitch-import)>nav button>span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}[role='dialog']:has(.dsh-ccswitch-import)>div{min-width:0;}.dsh-ccswitch-import__header{flex-direction:column;}.dsh-ccswitch-import__header-actions{width:100%;justify-content:space-between;}.dsh-ccswitch-import__header-actions .dsh-ccswitch-import__actions{flex:1;}.dsh-ccswitch-import__actions{width:100%;flex-direction:column;align-items:stretch;}.dsh-ccswitch-import__actions button{width:100%;}.dsh-ccswitch-import__row{grid-template-columns:auto minmax(0,1fr);min-width:0;}.dsh-ccswitch-import__content{min-width:0;}.dsh-ccswitch-import__row-extras{grid-column:1/-1;justify-self:start;flex-wrap:wrap;}.dsh-reasoning-model__header{align-items:stretch;flex-direction:column;gap:10px;padding:10px;}.dsh-reasoning-model__mode-area{width:100%;justify-content:space-between;}.dsh-reasoning-model__body{padding:10px;}.dsh-reasoning-model__footer{padding:9px 10px;}.dsh-reasoning-levels__heading{align-items:flex-start;}.dsh-reasoning-levels__options{gap:6px;}.dsh-reasoning-custom__body{grid-template-columns:minmax(0,1fr);}}`;
 		var STATUS_CSS = ".dsh-reasoning-status--dirty{color:var(--dsw-alias-label-secondary);}\n";
 		function installEmbedStyles() {
 		  if (typeof document === "undefined") return () => {

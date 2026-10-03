@@ -76,7 +76,7 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host 路由只接受 loopback、same-origin 请求；API key 不进入浏览器、日志、摘要或错误文本。
 - 读取需要 Node.js 22.19 或更高版本，以支持只读 SQLite API。
-- 插件只处理 CCSwitch 的自定义 Codex / Claude / Claude Desktop / OpenCode provider 和当前数据库字段；不会探测第三方 API 的真实推理能力。
+- 插件只处理 CCSwitch 的自定义 Codex / Claude / Claude Desktop / OpenCode provider 和当前数据库字段；「测试连接」只请求 `{baseURL}/models` 以核对凭据与地址是否可用，不做真实推理探测，也不写入任何设置。
 - 未知模型和不合法等级默认关闭，避免向网关发送未确认的 reasoning 参数。
 
 ## 与上游的差异
@@ -107,6 +107,13 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 - 导入后的自动刷新不再清空导入结果；结果项显示 provider 名称而不是内部 ID，失败项标红，并新增「清除」入口。
 - 首次进入设置页不再闪现「没有可读取的 CCSwitch provider」；「扫描中」与「导入中」不再共用同一个按钮文案。
 - 推理面板：保存后再修改，徽章立刻变为「有未保存的改动」，而不是继续显示「已保存」；无改动时保存按钮禁用，避免空写一次设置；「重新载入」在会丢弃本地修改时先确认；等级行汇总新增「已自定义 N 项」标记，折叠状态下也能看出哪些模型改过 wire 值。
+
+**`0.2.0-rc.4` 测试连接**
+
+- 每个可导入的行现在都有一个「测试连接」按钮：新增的 `POST /api/dsh-ccswitch/probe` 只请求 `{baseURL}/models`，把结果显示在行内——`连通 · N 个模型 · Nms`，或具体失败原因（`HTTP 401`、超时、网络错误、缺少凭据），在需要做判断的地方直接给出结论。
+- 探测在结构上就是只读的：这条路由不碰 settings，也不执行导入。有一条测试断言导入路径被调用 **0** 次。
+- 按钮放在徽章旁边，而不是塞进行 `<label>` 里，所以点击按钮不再连带切换复选框；没有凭据或 base URL 的行不显示按钮；单次请求最多探测 50 行。
+- 结果在两端都做归一化（未知原因一律按网络失败处理，计数与耗时都做夹取），重扫后消失的行会连带丢弃它的探测结果；服务端继续按密钥值脱敏，错误响应里不会回显 key。
 
 上游版权与许可证原样保留在 `LICENSE`；改动声明见 `NOTICE`，且每个被改动的源文件头部都带改动提示。
 

@@ -94,6 +94,41 @@ function resultDetail(result, tr) {
   return '';
 }
 
+/**
+ * "Test connection" reports reach the Host the same way blocked reasons do: a
+ * stable reason code plus numbers, so the wording can be localized while the
+ * codes stay the single source of truth. Unknown codes degrade to "network".
+ */
+const PROBE_FALLBACK = {
+  ok: '连通 · {count} 个模型 · {ms}ms',
+  empty: '连通 · 上游没返回模型',
+  'http-error': '失败 · HTTP {status}',
+  'no-credentials': '无法测试：缺少凭据或 base URL',
+  timeout: '失败 · 超时',
+  network: '失败 · 网络错误',
+};
+
+function probeLabel(probe, tr) {
+  if (probe?.phase === 'error') {
+    return tr('importer.probe.requestFailed', '失败 · {message}', { message: probe.message ?? '' });
+  }
+  const reason = typeof probe?.reason === 'string' && PROBE_FALLBACK[probe.reason] ? probe.reason : 'network';
+  return tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
+    count: probe?.modelCount ?? 0,
+    ms: probe?.latencyMs ?? 0,
+    status: probe?.httpStatus ?? 0,
+  });
+}
+
+function probeKind(probe) {
+  return probe?.phase !== 'error' && probe?.ok === true ? 'ok' : 'error';
+}
+
+/** Same normalization the reasoning panel uses before building a DOM id. */
+function domIdPart(value) {
+  return String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 60);
+}
+
 export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) {
   const tr = makeTranslator(t);
   if (!controller) return null;
@@ -170,19 +205,27 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
               ),
             ),
           ),
-          ...profiles.map((profile) => {
+          ...profiles.map((profile, index) => {
             const selectable = isSelectable(profile);
-            return h("label", {
+            const probe = snapshot.probes?.[profile.profileId];
+            const testing = probe?.phase === 'testing';
+            const canProbe = selectable && Boolean(profile.baseURL);
+            const checkboxId = `dsh-ccswitch-import-select-${index}-${domIdPart(profile.profileId)}`;
+            return h("div", {
               key: profile.profileId,
               className: "dsh-ccswitch-import__row" + (selectable ? "" : " dsh-ccswitch-import__row--blocked"),
             },
               h("input", {
                 type: "checkbox",
+                id: checkboxId,
                 checked: selected.has(profile.profileId),
                 disabled: !selectable || busy,
                 onChange: () => controller.toggleSelected(profile.profileId),
               }),
-              h("span", { className: "dsh-ccswitch-import__content" },
+              // The row is a plain container now and the text is a real <label>
+              // for the checkbox: a button inside a wrapping <label> would also
+              // toggle the checkbox when clicked.
+              h("label", { htmlFor: checkboxId, className: "dsh-ccswitch-import__content" },
                 h("span", { className: "dsh-ccswitch-import__primary-line" },
                   h("strong", null, profile.profileName || profile.profileId),
                   profile.baseURL ? h("code", null, profile.baseURL) : null,
@@ -200,7 +243,22 @@ export function CCSwitchImportSection({ controller, collapse, setCollapse, t }) 
                     : null,
                 ),
               ),
-              h("span", { className: badgeClass(profile.status) }, statusLabel(profile.status, tr)),
+              h("span", { className: "dsh-ccswitch-import__row-extras" },
+                canProbe ? h("button", {
+                  type: "button",
+                  className: "dsh-ccswitch-import__link dsh-ccswitch-import__probe-btn",
+                  disabled: testing || busy,
+                  "aria-label": tr('importer.probe.testAria', '测试 {name} 的连接', { name: profile.profileName || profile.profileId }),
+                  onClick: () => { Promise.resolve(controller.probeOne(profile.profileId)).catch(() => {}); },
+                }, testing ? tr('importer.probe.testing', '测试中…') : tr('importer.probe.test', '测试连接')) : null,
+                probe && !testing
+                  ? h("span", {
+                    role: "status",
+                    className: `dsh-ccswitch-import__probe dsh-ccswitch-import__probe--${probeKind(probe)}`,
+                  }, probeLabel(probe, tr))
+                  : null,
+                h("span", { className: badgeClass(profile.status) }, statusLabel(profile.status, tr)),
+              ),
             );
           }),
         ),

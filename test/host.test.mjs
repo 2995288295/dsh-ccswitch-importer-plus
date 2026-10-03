@@ -31,6 +31,7 @@ test('Host apply registers injected routes and disposes them', () => {
   assert.deepEqual(registered.map((route) => route.path), [
     '/api/dsh-ccswitch/scan',
     '/api/dsh-ccswitch/import',
+    '/api/dsh-ccswitch/probe',
   ])
   effectCleanup()
   assert.deepEqual(disposed, registered.map((route) => route.path))

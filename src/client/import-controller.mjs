@@ -10,6 +10,39 @@ function importable(profile) {
   return profile.status !== 'blocked' && profile.credential === 'found'
 }
 
+const PROBE_REASONS = new Set(['ok', 'empty', 'http-error', 'timeout', 'network', 'no-credentials'])
+
+/** Counts and durations are clamped, not trusted: the Host could be anything. */
+function probeNumber(value) {
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, 600000) : 0
+}
+
+/** Trust only the probe fields we render; anything odd degrades to a failure. */
+function sanitizeProbe(result) {
+  return {
+    ok: result?.ok === true,
+    reason: PROBE_REASONS.has(result?.reason) ? result.reason : 'network',
+    httpStatus: Number.isInteger(result?.httpStatus) && result.httpStatus > 0 && result.httpStatus < 1000
+      ? result.httpStatus
+      : undefined,
+    latencyMs: probeNumber(result?.latencyMs),
+    discoveredCount: probeNumber(result?.discoveredCount),
+    addedCount: probeNumber(result?.addedCount),
+    modelCount: probeNumber(result?.modelCount),
+    message: typeof result?.message === 'string' ? result.message.slice(0, 300) : '',
+  }
+}
+
+/** Drop probe verdicts for rows that are no longer in the list. */
+function pruneProbes(probes, profiles) {
+  const ids = new Set(profiles.map((profile) => profile.profileId))
+  const next = {}
+  for (const [id, value] of Object.entries(probes ?? {})) {
+    if (ids.has(id)) next[id] = value
+  }
+  return next
+}
+
 export function createCCSwitchImportController({
   fetchImpl = defaultFetch,
   getRevision = () => undefined,
@@ -20,6 +53,7 @@ export function createCCSwitchImportController({
     profiles: [],
     selectedIds: [],
     results: [],
+    probes: {},
     error: null,
     source: undefined,
     probedPath: undefined,
@@ -71,6 +105,37 @@ export function createCCSwitchImportController({
       publish({ ...snapshot, results: [] })
     },
     /**
+     * Test one row's endpoint without importing anything: the Host only reads
+     * `{baseURL}/models`, so this never touches settings or credentials.
+     */
+    probeOne: async (profileId) => {
+      const profile = snapshot.profiles.find((item) => item.profileId === profileId)
+      if (!profile || !importable(profile)) return undefined
+      if (snapshot.probes?.[profileId]?.phase === 'testing') return undefined
+      const setProbe = (value) => {
+        publish({ ...snapshot, probes: { ...snapshot.probes, [profileId]: value } })
+      }
+      setProbe({ phase: 'testing' })
+      try {
+        const body = await request('/api/dsh-ccswitch/probe', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ profileIds: [profileId] }),
+        })
+        const results = Array.isArray(body.results) ? body.results : []
+        const result = results.find((item) => item.profileId === profileId) ?? results[0]
+        if (!result) {
+          setProbe({ phase: 'error', message: '' })
+          return undefined
+        }
+        setProbe({ phase: 'done', ...sanitizeProbe(result) })
+        return result
+      } catch (error) {
+        setProbe({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
+        return undefined
+      }
+    },
+    /**
      * `keepResults` is for the refresh that follows an import: the report the
      * user is reading must survive, otherwise the rows that were just imported
      * still show "ready to import" while the summary of what happened vanishes.
@@ -95,6 +160,7 @@ export function createCCSwitchImportController({
           profiles,
           selectedIds,
           results: keepResults ? snapshot.results : [],
+          probes: pruneProbes(snapshot.probes, profiles),
           error: null,
           source: typeof body.source === 'string' ? body.source : undefined,
           probedPath: typeof body.probedPath === 'string' ? body.probedPath : undefined,

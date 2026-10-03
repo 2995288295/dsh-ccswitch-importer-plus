@@ -5,11 +5,14 @@
 import { discoverSources, scanSource, defaultSourcePath, SCAN_REASON } from '../../lib/core/scan.js'
 import { classifyProfiles } from '../../lib/core/mapper.js'
 import { importProfiles as runImport } from '../../lib/core/importer.js'
-import { probeModels } from '../../lib/core/probe.js'
+import { probeModels, probeConnection, PROBE_REASON, PROBE_REASONS } from '../../lib/core/probe.js'
 import { redactText, BLOCKED, BLOCKED_CODES } from '../../lib/core/safety.js'
 
 export const API_BASE = '/api/dsh-ccswitch'
 const MAX_JSON_BODY_BYTES = 64 * 1024
+// One "test connection" click probes one row; cap the fan-out so a crafted
+// request cannot turn this endpoint into an outbound request storm.
+const MAX_PROBE_TARGETS = 50
 const SAFE_STATUSES = new Set(['new', 'update', 'updated', 'unchanged', 'blocked', 'failed', 'skipped'])
 const SAFE_REASONING = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 const SAFE_SCAN_REASONS = new Set(Object.values(SCAN_REASON))
@@ -184,6 +187,7 @@ export function makeRoutes(deps = {}) {
   const scan = deps.scan ?? defaultScan
   const getProviders = deps.getProviders ?? (async () => ({}))
   const importProfiles = deps.importProfiles ?? runImport
+  const probe = deps.probe ?? probeConnection
   const isLoopback = deps.isLoopback ?? isLoopbackRequest
   const settings = deps.settings
   const credentials = deps.credentials
@@ -264,7 +268,54 @@ export function makeRoutes(deps = {}) {
         }
       },
     },
+    {
+      kind: 'exact',
+      path: `${API_BASE}/probe`,
+      handler: async (request, response) => {
+        if (!methodFence(request, response, isLoopback, 'POST', { requireOrigin: true })) return
+        const body = await readJsonBody(request)
+        if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== 'string')) {
+          writeJson(response, 400, { error: 'body must be { profileIds: string[] }' })
+          return
+        }
+        // Probe-only: this endpoint never writes settings, it only reports
+        // whether the stored endpoint answers and how long it took.
+        let knownSecrets = []
+        try {
+          const profiles = normalizeScanResult(await scan()).profiles
+          const selected = new Set(body.profileIds)
+          const targets = profiles
+            .filter((profile) => !profile.skipped && !profile.blocked && selected.has(profile.profileId))
+            .slice(0, MAX_PROBE_TARGETS)
+          knownSecrets = targets.map((profile) => profile.apiKey).filter((key) => typeof key === 'string' && key.length > 0)
+          const results = await Promise.all(targets.map(async (profile) => {
+            const outcome = await probe(profile)
+            return {
+              profileId: publicText(profile.profileId),
+              profileName: publicText(profile.profileName),
+              ok: outcome?.ok === true,
+              reason: PROBE_REASONS.has(outcome?.reason) ? outcome.reason : PROBE_REASON.NETWORK,
+              httpStatus: Number.isInteger(outcome?.httpStatus) ? outcome.httpStatus : undefined,
+              latencyMs: Number.isInteger(outcome?.latencyMs) ? Math.min(Math.max(outcome.latencyMs, 0), 600000) : 0,
+              discoveredCount: probeCount(outcome?.discoveredCount),
+              addedCount: probeCount(outcome?.addedCount),
+              modelCount: probeCount(outcome?.modelCount),
+              message: redactText(outcome?.message, knownSecrets) || 'probe returned no detail',
+            }
+          }))
+          writeJson(response, 200, { results })
+        } catch (err) {
+          const label = err instanceof Error ? err.name : typeof err
+          console.error('[dsh-ccswitch-importer-plus] probe failed:', `${label}: ${redactText(err, knownSecrets)}`)
+          writeJson(response, 500, { error: 'probe failed' })
+        }
+      },
+    },
   ]
+}
+
+function probeCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0
 }
 
 function knownSecretsFor(result, secretByProfileId) {

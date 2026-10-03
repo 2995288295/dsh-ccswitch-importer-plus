@@ -1,6 +1,6 @@
 {
   "name": "dsh-ccswitch-importer-plus",
-  "version": "0.2.0-rc.3",
+  "version": "0.2.0-rc.4",
   "description": "Import CC Switch Codex, Claude and OpenCode providers into DeepSeek Harness and configure per-model reasoning depth.",
   "keywords": [
     "dsh",

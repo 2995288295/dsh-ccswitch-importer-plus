@@ -823,51 +823,119 @@ function scanSource(dbPath, { logger = defaultLogger } = {}) {
 // lib/core/probe.js
 var PROBE_TIMEOUT_MS = 8e3;
 var MAX_PROBED_MODELS = 100;
+var PROBE_REASON = {
+  OK: "ok",
+  EMPTY: "empty",
+  HTTP_ERROR: "http-error",
+  TIMEOUT: "timeout",
+  NETWORK: "network",
+  NO_CREDENTIALS: "no-credentials",
+  UNKNOWN: "network"
+};
+var PROBE_REASONS = new Set(Object.values(PROBE_REASON));
 function joinUrl(baseURL, path) {
   return `${String(baseURL).replace(/\/+$/, "")}${path}`;
 }
-async function probeModels(profile) {
-  const warnings = [];
-  if (profile.apiKey === void 0 || !profile.baseURL) return { profile, warnings };
+function headersFor(profile) {
+  const headers = { accept: "application/json" };
+  headers.authorization = `Bearer ${profile.apiKey}`;
   if (profile.api === "anthropic-messages") {
+    headers["x-api-key"] = profile.apiKey;
+    headers["anthropic-version"] = "2023-06-01";
   }
+  return headers;
+}
+async function probeConnection(profile, options = {}) {
+  const startedAt = Date.now();
+  const existing = new Set((profile?.models ?? []).map((model) => model.id));
+  const base = {
+    ok: false,
+    reason: PROBE_REASON.NO_CREDENTIALS,
+    httpStatus: void 0,
+    latencyMs: 0,
+    modelIds: [],
+    discoveredCount: 0,
+    addedCount: 0,
+    modelCount: existing.size,
+    message: "\u7F3A\u5C11 API key \u6216 base URL\uFF0C\u65E0\u6CD5\u6D4B\u8BD5\u8FDE\u63A5"
+  };
+  if (profile?.apiKey === void 0 || !profile?.baseURL) return base;
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : PROBE_TIMEOUT_MS;
+  const doFetch = typeof options.fetchImpl === "function" ? options.fetchImpl : globalThis.fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const headers = { accept: "application/json" };
-    headers.authorization = `Bearer ${profile.apiKey}`;
-    if (profile.api === "anthropic-messages") {
-      headers["x-api-key"] = profile.apiKey;
-      headers["anthropic-version"] = "2023-06-01";
-    }
-    const url = joinUrl(profile.baseURL, "/models");
-    const response = await fetch(url, { headers, signal: controller.signal });
+    const response = await doFetch(joinUrl(profile.baseURL, "/models"), {
+      headers: headersFor(profile),
+      signal: controller.signal
+    });
+    const latencyMs = Date.now() - startedAt;
     if (!response.ok) {
-      warnings.push(`\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`);
-      return { profile, warnings };
+      return {
+        ...base,
+        reason: PROBE_REASON.HTTP_ERROR,
+        httpStatus: response.status,
+        latencyMs,
+        message: `\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
+      };
     }
     const payload = await response.json();
     const ids = extractModelIds(payload);
     if (ids.length === 0) {
-      warnings.push("\u6A21\u578B\u63A2\u6D4B\u8FD4\u56DE\u7A7A\u5217\u8868\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868");
-      return { profile, warnings };
+      return {
+        ...base,
+        ok: true,
+        reason: PROBE_REASON.EMPTY,
+        httpStatus: response.status,
+        latencyMs,
+        message: "\u6A21\u578B\u63A2\u6D4B\u8FD4\u56DE\u7A7A\u5217\u8868\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868"
+      };
     }
-    const existing = new Set((profile.models ?? []).map((model) => model.id));
-    const merged = [...profile.models ?? []];
-    for (const id of ids) {
-      if (existing.has(id)) continue;
-      existing.add(id);
-      merged.push(isKnownModel(id) ? { id, name: displayNameFor(id) } : { id });
-    }
-    warnings.push(`\u6A21\u578B\u63A2\u6D4B\u6210\u529F\uFF1A\u65B0\u589E ${merged.length - (profile.models?.length ?? 0)} \u4E2A\u6A21\u578B\uFF08\u5171 ${merged.length} \u4E2A\uFF09`);
-    return { profile: { ...profile, models: merged.slice(0, MAX_PROBED_MODELS) }, warnings };
+    const merged = mergeModels(profile.models, ids);
+    return {
+      ok: true,
+      reason: PROBE_REASON.OK,
+      httpStatus: response.status,
+      latencyMs,
+      modelIds: ids,
+      discoveredCount: ids.length,
+      addedCount: merged.length - (profile.models?.length ?? 0),
+      modelCount: merged.length,
+      message: `\u6A21\u578B\u63A2\u6D4B\u6210\u529F\uFF1A\u65B0\u589E ${merged.length - (profile.models?.length ?? 0)} \u4E2A\u6A21\u578B\uFF08\u5171 ${merged.length} \u4E2A\uFF09`
+    };
   } catch (err) {
-    const reason = err?.name === "AbortError" ? "\u8D85\u65F6" : "\u7F51\u7EDC\u9519\u8BEF";
-    warnings.push(`\u6A21\u578B\u63A2\u6D4B${reason}\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`);
-    return { profile, warnings };
+    const reason = err?.name === "AbortError" ? PROBE_REASON.TIMEOUT : PROBE_REASON.NETWORK;
+    return {
+      ...base,
+      reason,
+      latencyMs: Date.now() - startedAt,
+      message: `\u6A21\u578B\u63A2\u6D4B${reason === PROBE_REASON.TIMEOUT ? "\u8D85\u65F6" : "\u7F51\u7EDC\u9519\u8BEF"}\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+async function probeModels(profile, options = {}) {
+  const outcome = await probeConnection(profile, options);
+  if (outcome.reason === PROBE_REASON.NO_CREDENTIALS) return { profile, warnings: [] };
+  if (!outcome.ok || outcome.reason === PROBE_REASON.EMPTY) {
+    return { profile, warnings: [outcome.message] };
+  }
+  const merged = mergeModels(profile.models, outcome.modelIds);
+  return {
+    profile: { ...profile, models: merged.slice(0, MAX_PROBED_MODELS) },
+    warnings: [outcome.message]
+  };
+}
+function mergeModels(models, ids) {
+  const merged = [...models ?? []];
+  const seen = new Set(merged.map((model) => model.id));
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(isKnownModel(id) ? { id, name: displayNameFor(id) } : { id });
+  }
+  return merged;
 }
 function extractModelIds(payload) {
   const list = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
@@ -880,6 +948,7 @@ function displayNameFor(modelId) {
 // src/host/routes.mjs
 var API_BASE = "/api/dsh-ccswitch";
 var MAX_JSON_BODY_BYTES = 64 * 1024;
+var MAX_PROBE_TARGETS = 50;
 var SAFE_STATUSES = /* @__PURE__ */ new Set(["new", "update", "updated", "unchanged", "blocked", "failed", "skipped"]);
 var SAFE_REASONING = /* @__PURE__ */ new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 var SAFE_SCAN_REASONS = new Set(Object.values(SCAN_REASON));
@@ -1035,6 +1104,7 @@ function makeRoutes(deps = {}) {
   const scan = deps.scan ?? defaultScan;
   const getProviders = deps.getProviders ?? (async () => ({}));
   const importProfiles2 = deps.importProfiles ?? importProfiles;
+  const probe = deps.probe ?? probeConnection;
   const isLoopback = deps.isLoopback ?? isLoopbackRequest;
   const settings = deps.settings;
   const credentials = deps.credentials;
@@ -1107,8 +1177,50 @@ function makeRoutes(deps = {}) {
           writeJson(response, 500, { error: "import failed" });
         }
       }
+    },
+    {
+      kind: "exact",
+      path: `${API_BASE}/probe`,
+      handler: async (request, response) => {
+        if (!methodFence(request, response, isLoopback, "POST", { requireOrigin: true })) return;
+        const body = await readJsonBody(request);
+        if (!body || !Array.isArray(body.profileIds) || body.profileIds.some((id) => typeof id !== "string")) {
+          writeJson(response, 400, { error: "body must be { profileIds: string[] }" });
+          return;
+        }
+        let knownSecrets = [];
+        try {
+          const profiles = normalizeScanResult(await scan()).profiles;
+          const selected = new Set(body.profileIds);
+          const targets = profiles.filter((profile) => !profile.skipped && !profile.blocked && selected.has(profile.profileId)).slice(0, MAX_PROBE_TARGETS);
+          knownSecrets = targets.map((profile) => profile.apiKey).filter((key) => typeof key === "string" && key.length > 0);
+          const results = await Promise.all(targets.map(async (profile) => {
+            const outcome = await probe(profile);
+            return {
+              profileId: publicText(profile.profileId),
+              profileName: publicText(profile.profileName),
+              ok: outcome?.ok === true,
+              reason: PROBE_REASONS.has(outcome?.reason) ? outcome.reason : PROBE_REASON.NETWORK,
+              httpStatus: Number.isInteger(outcome?.httpStatus) ? outcome.httpStatus : void 0,
+              latencyMs: Number.isInteger(outcome?.latencyMs) ? Math.min(Math.max(outcome.latencyMs, 0), 6e5) : 0,
+              discoveredCount: probeCount(outcome?.discoveredCount),
+              addedCount: probeCount(outcome?.addedCount),
+              modelCount: probeCount(outcome?.modelCount),
+              message: redactText(outcome?.message, knownSecrets) || "probe returned no detail"
+            };
+          }));
+          writeJson(response, 200, { results });
+        } catch (err) {
+          const label = err instanceof Error ? err.name : typeof err;
+          console.error("[dsh-ccswitch-importer-plus] probe failed:", `${label}: ${redactText(err, knownSecrets)}`);
+          writeJson(response, 500, { error: "probe failed" });
+        }
+      }
     }
   ];
+}
+function probeCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 function knownSecretsFor(result, secretByProfileId) {
   const own = secretByProfileId.get(result?.profileId);

@@ -76,7 +76,7 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host routes accept only loopback, same-origin requests; API keys never enter the browser, logs, summaries, or error text.
 - Reading requires Node.js 22.19 or newer for the read-only SQLite API.
-- The plugin handles custom CCSwitch Codex / Claude / Claude Desktop / OpenCode providers and the fields currently present in the database; it does not probe third-party API capabilities.
+- The plugin handles custom CCSwitch Codex / Claude / Claude Desktop / OpenCode providers and the fields currently present in the database. "Test connection" only calls `{baseURL}/models` to check that the key and the address work; it never exercises real inference, and it writes nothing.
 - Unknown models and invalid levels default to disabled reasoning to avoid sending unconfirmed parameters to a gateway.
 
 ## Differences from upstream
@@ -107,6 +107,13 @@ Relative to [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-
 - The refresh that follows an import no longer wipes the import report; rows show the provider name instead of the internal id, failures are marked in the error colour, and a "clear" action was added.
 - The empty-state flash ("no CCSwitch provider found") is gone on first paint, and "scanning" and "importing" no longer share one button label.
 - Reasoning panel: editing after a save flips the badge to "unsaved changes" instead of still claiming "saved"; the save button is disabled when the draft is unchanged, so it cannot burn a pointless settings write; "reload" asks before discarding local edits; and the level summary shows a "N custom" marker so a collapsed row still reveals customised wire values.
+
+**`0.2.0-rc.4` test connection**
+
+- Every importable row now has a "Test connection" button. It calls a new `POST /api/dsh-ccswitch/probe` route that only reaches `{baseURL}/models` and reports `connected · N models · Nms`, or the failure (`HTTP 401`, timeout, network, missing credentials) — on the row, where the decision is made.
+- Probing is read-only by construction: the route never touches settings, and an import is not part of the request. A test asserts that the import path is called zero times.
+- The button sits next to the badge rather than inside the row `<label>`, so clicking it no longer toggles the checkbox. Rows without a credential or a base URL show no button, and a single request probes at most 50 rows.
+- Verdicts are sanitised on both sides (unknown reasons degrade to a network failure, counts and durations are clamped) and are dropped when the row they describe disappears from a re-scan. The host keeps redacting by secret value, so an error body never echoes the key.
 
 The upstream copyright and license are kept unmodified in `LICENSE`; changed files carry a notice header and `NOTICE` records the modifications.
 

@@ -377,3 +377,38 @@ test('the new affordances are styled', async () => {
     assert.ok(css.includes(`.${selector}`), `styles.mjs is missing .${selector}`)
   }
 })
+
+test('the "test connection" button is wired into the row, not into a label', async () => {
+  const ui = await read('src/ui/CCSwitchImportSection.mjs')
+  // The row must be a container with a real <label> for the checkbox: a button
+  // nested in a wrapping <label> would also toggle the checkbox when clicked.
+  assert.match(ui, /h\("div", \{\s*key: profile\.profileId,\s*className: "dsh-ccswitch-import__row"/)
+  assert.match(ui, /h\("label", \{ htmlFor: checkboxId, className: "dsh-ccswitch-import__content" \}/)
+  assert.match(ui, /className: "dsh-ccswitch-import__row-extras"/)
+  assert.match(ui, /controller\.probeOne\(profile\.profileId\)/)
+  assert.match(ui, /importer\.probe\.test\b/)
+  assert.match(ui, /importer\.probe\.testing/)
+  assert.match(ui, /probeLabel/)
+  assert.match(ui, /probeKind/)
+  // Only a row with a credential and a base URL can be tested at all.
+  assert.match(ui, /const canProbe = selectable && Boolean\(profile\.baseURL\)/)
+
+  const css = await read('src/client/styles.mjs')
+  for (const selector of [
+    'dsh-ccswitch-import__row-extras',
+    'dsh-ccswitch-import__probe',
+    'dsh-ccswitch-import__probe--ok',
+    'dsh-ccswitch-import__probe--error',
+    'dsh-ccswitch-import__probe-btn',
+  ]) {
+    assert.ok(css.includes(`.${selector}`), `styles.mjs is missing .${selector}`)
+  }
+})
+
+test('the import controller owns the probe verdict and prunes it on re-scan', async () => {
+  const client = await read('src/client/import-controller.mjs')
+  assert.match(client, /probeOne: async \(profileId\)/)
+  assert.match(client, /'\/api\/dsh-ccswitch\/probe'/)
+  assert.match(client, /probes: pruneProbes\(snapshot\.probes, profiles\)/)
+  assert.match(client, /function sanitizeProbe\(result\)/)
+})

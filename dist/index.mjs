@@ -823,6 +823,9 @@ function scanSource(dbPath, { logger = defaultLogger } = {}) {
 // lib/core/probe.js
 var PROBE_TIMEOUT_MS = 8e3;
 var MAX_PROBED_MODELS = 100;
+var MAX_DETAIL_LENGTH = 200;
+var MODELS_FALLBACK_STATUSES = /* @__PURE__ */ new Set([401, 403, 404, 405, 501]);
+var MINIMAL_PROMPT = "ping";
 var PROBE_REASON = {
   OK: "ok",
   EMPTY: "empty",
@@ -833,6 +836,12 @@ var PROBE_REASON = {
   UNKNOWN: "network"
 };
 var PROBE_REASONS = new Set(Object.values(PROBE_REASON));
+var PROBE_CHECK = {
+  MODELS: "models",
+  MINIMAL: "minimal",
+  NONE: "none"
+};
+var PROBE_CHECKS = new Set(Object.values(PROBE_CHECK));
 function joinUrl(baseURL, path) {
   return `${String(baseURL).replace(/\/+$/, "")}${path}`;
 }
@@ -845,13 +854,64 @@ function headersFor(profile) {
   }
   return headers;
 }
+function firstModelId(profile) {
+  const models = Array.isArray(profile?.models) ? profile.models : [];
+  for (const model of models) {
+    const id = typeof model === "string" ? model : model?.id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return void 0;
+}
+function minimalRequestFor(profile, modelId) {
+  const headers = { ...headersFor(profile), "content-type": "application/json" };
+  if (profile.api === "anthropic-messages") {
+    return {
+      url: joinUrl(profile.baseURL, "/messages"),
+      init: {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: modelId,
+          max_tokens: 1,
+          messages: [{ role: "user", content: MINIMAL_PROMPT }]
+        })
+      }
+    };
+  }
+  if (profile.api === "openai-responses") {
+    return {
+      url: joinUrl(profile.baseURL, "/responses"),
+      init: {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: modelId, input: MINIMAL_PROMPT, max_output_tokens: 1 })
+      }
+    };
+  }
+  return {
+    url: joinUrl(profile.baseURL, "/chat/completions"),
+    init: {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: "user", content: MINIMAL_PROMPT }],
+        max_tokens: 1
+      })
+    }
+  };
+}
 async function probeConnection(profile, options = {}) {
   const startedAt = Date.now();
-  const existing = new Set((profile?.models ?? []).map((model) => model.id));
+  const existing = new Set(
+    (profile?.models ?? []).map((model) => typeof model === "string" ? model : model?.id).filter((id) => typeof id === "string" && id.length > 0)
+  );
   const base = {
     ok: false,
     reason: PROBE_REASON.NO_CREDENTIALS,
+    check: PROBE_CHECK.NONE,
     httpStatus: void 0,
+    detail: void 0,
     latencyMs: 0,
     modelIds: [],
     discoveredCount: 0,
@@ -861,62 +921,102 @@ async function probeConnection(profile, options = {}) {
   };
   if (profile?.apiKey === void 0 || !profile?.baseURL) return base;
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : PROBE_TIMEOUT_MS;
+  const allowMinimal = options.allowMinimalRequest !== false;
   const doFetch = typeof options.fetchImpl === "function" ? options.fetchImpl : globalThis.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await doFetch(joinUrl(profile.baseURL, "/models"), {
-      headers: headersFor(profile),
-      signal: controller.signal
-    });
-    const latencyMs = Date.now() - startedAt;
-    if (!response.ok) {
+    let listing;
+    try {
+      listing = await doFetch(joinUrl(profile.baseURL, "/models"), {
+        headers: headersFor(profile),
+        signal: controller.signal
+      });
+    } catch (err) {
+      const reason = err?.name === "AbortError" ? PROBE_REASON.TIMEOUT : PROBE_REASON.NETWORK;
       return {
         ...base,
-        reason: PROBE_REASON.HTTP_ERROR,
-        httpStatus: response.status,
-        latencyMs,
-        message: `\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${response.status}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
+        reason,
+        latencyMs: Date.now() - startedAt,
+        message: `\u6A21\u578B\u63A2\u6D4B${reason === PROBE_REASON.TIMEOUT ? "\u8D85\u65F6" : "\u7F51\u7EDC\u9519\u8BEF"}\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
       };
     }
-    const payload = await response.json();
-    const ids = extractModelIds(payload);
-    if (ids.length === 0) {
+    if (listing.ok) {
+      const latencyMs = Date.now() - startedAt;
+      const payload = await listing.json();
+      const ids = extractModelIds(payload);
+      if (ids.length === 0) {
+        return {
+          ...base,
+          ok: true,
+          reason: PROBE_REASON.EMPTY,
+          check: PROBE_CHECK.MODELS,
+          httpStatus: listing.status,
+          latencyMs,
+          message: "\u6A21\u578B\u63A2\u6D4B\u8FD4\u56DE\u7A7A\u5217\u8868\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868"
+        };
+      }
+      const merged = mergeModels(profile.models, ids);
       return {
-        ...base,
         ok: true,
-        reason: PROBE_REASON.EMPTY,
-        httpStatus: response.status,
+        reason: PROBE_REASON.OK,
+        check: PROBE_CHECK.MODELS,
+        httpStatus: listing.status,
+        detail: void 0,
         latencyMs,
-        message: "\u6A21\u578B\u63A2\u6D4B\u8FD4\u56DE\u7A7A\u5217\u8868\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868"
+        modelIds: ids,
+        discoveredCount: ids.length,
+        addedCount: merged.length - (profile.models?.length ?? 0),
+        modelCount: merged.length,
+        message: `\u6A21\u578B\u63A2\u6D4B\u6210\u529F\uFF1A\u65B0\u589E ${merged.length - (profile.models?.length ?? 0)} \u4E2A\u6A21\u578B\uFF08\u5171 ${merged.length} \u4E2A\uFF09`
       };
     }
-    const merged = mergeModels(profile.models, ids);
-    return {
-      ok: true,
-      reason: PROBE_REASON.OK,
-      httpStatus: response.status,
-      latencyMs,
-      modelIds: ids,
-      discoveredCount: ids.length,
-      addedCount: merged.length - (profile.models?.length ?? 0),
-      modelCount: merged.length,
-      message: `\u6A21\u578B\u63A2\u6D4B\u6210\u529F\uFF1A\u65B0\u589E ${merged.length - (profile.models?.length ?? 0)} \u4E2A\u6A21\u578B\uFF08\u5171 ${merged.length} \u4E2A\uFF09`
-    };
-  } catch (err) {
-    const reason = err?.name === "AbortError" ? PROBE_REASON.TIMEOUT : PROBE_REASON.NETWORK;
-    return {
+    const httpStatus = listing.status;
+    const detail = await readErrorDetail(listing);
+    const failed = {
       ...base,
-      reason,
+      reason: PROBE_REASON.HTTP_ERROR,
+      httpStatus,
+      detail,
       latencyMs: Date.now() - startedAt,
-      message: `\u6A21\u578B\u63A2\u6D4B${reason === PROBE_REASON.TIMEOUT ? "\u8D85\u65F6" : "\u7F51\u7EDC\u9519\u8BEF"}\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
+      message: `\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${httpStatus}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
     };
+    const modelId = firstModelId(profile);
+    if (!allowMinimal || !MODELS_FALLBACK_STATUSES.has(httpStatus) || modelId === void 0) {
+      return failed;
+    }
+    try {
+      const { url, init } = minimalRequestFor(profile, modelId);
+      const minimal = await doFetch(url, { ...init, signal: controller.signal });
+      const latencyMs = Date.now() - startedAt;
+      if (minimal.ok) {
+        return {
+          ...base,
+          ok: true,
+          reason: PROBE_REASON.OK,
+          check: PROBE_CHECK.MINIMAL,
+          httpStatus: minimal.status,
+          detail,
+          latencyMs,
+          message: `\u6A21\u578B\u5217\u8868\u4E0D\u53EF\u7528\uFF08HTTP ${httpStatus}\uFF09\uFF0C\u6700\u5C0F\u8BF7\u6C42\u9A8C\u8BC1\u8FDE\u901A`
+        };
+      }
+      return {
+        ...failed,
+        httpStatus: minimal.status,
+        detail: await readErrorDetail(minimal) ?? detail,
+        latencyMs,
+        message: `\u6A21\u578B\u63A2\u6D4B\u5931\u8D25\uFF08HTTP ${minimal.status}\uFF09\uFF0C\u4FDD\u7559\u6E90\u914D\u7F6E\u7684\u6A21\u578B\u5217\u8868`
+      };
+    } catch {
+      return { ...failed, latencyMs: Date.now() - startedAt };
+    }
   } finally {
     clearTimeout(timer);
   }
 }
 async function probeModels(profile, options = {}) {
-  const outcome = await probeConnection(profile, options);
+  const outcome = await probeConnection(profile, { ...options, allowMinimalRequest: false });
   if (outcome.reason === PROBE_REASON.NO_CREDENTIALS) return { profile, warnings: [] };
   if (!outcome.ok || outcome.reason === PROBE_REASON.EMPTY) {
     return { profile, warnings: [outcome.message] };
@@ -926,6 +1026,58 @@ async function probeModels(profile, options = {}) {
     profile: { ...profile, models: merged.slice(0, MAX_PROBED_MODELS) },
     warnings: [outcome.message]
   };
+}
+async function readErrorDetail(response) {
+  if (typeof response?.text !== "function") return void 0;
+  try {
+    return extractDetail(await response.text());
+  } catch {
+    return void 0;
+  }
+}
+function extractDetail(text) {
+  const raw = String(text ?? "").trim();
+  if (raw.length === 0) return void 0;
+  let candidate;
+  try {
+    candidate = firstMessage(JSON.parse(raw));
+  } catch {
+    candidate = firstMessage(jsonSlice(raw)) ?? quotedMessage(raw);
+  }
+  const flat = String(candidate ?? raw).replace(/\s+/g, " ").trim();
+  return flat.length > 0 ? flat.slice(0, MAX_DETAIL_LENGTH) : void 0;
+}
+function jsonSlice(raw) {
+  const start = raw.search(/[[{]/);
+  if (start < 0) return void 0;
+  try {
+    return JSON.parse(raw.slice(start));
+  } catch {
+    return void 0;
+  }
+}
+function quotedMessage(raw) {
+  const match = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!match) return void 0;
+  return match[1].replace(
+    /\\(.)/g,
+    (_, char) => char === "n" || char === "r" || char === "t" ? " " : char
+  );
+}
+function firstMessage(payload) {
+  if (typeof payload === "string") return payload;
+  if (payload === null || typeof payload !== "object") return void 0;
+  const error = payload.error;
+  if (typeof error === "string") return error;
+  if (error !== null && typeof error === "object") {
+    for (const key of ["message", "msg", "detail", "code"]) {
+      if (typeof error[key] === "string" && error[key].length > 0) return error[key];
+    }
+  }
+  for (const key of ["message", "msg", "detail", "error"]) {
+    if (typeof payload[key] === "string" && payload[key].length > 0) return payload[key];
+  }
+  return void 0;
 }
 function mergeModels(models, ids) {
   const merged = [...models ?? []];
@@ -1196,12 +1348,15 @@ function makeRoutes(deps = {}) {
           knownSecrets = targets.map((profile) => profile.apiKey).filter((key) => typeof key === "string" && key.length > 0);
           const results = await Promise.all(targets.map(async (profile) => {
             const outcome = await probe(profile);
+            const detail = redactText(outcome?.detail, knownSecrets);
             return {
               profileId: publicText(profile.profileId),
               profileName: publicText(profile.profileName),
               ok: outcome?.ok === true,
               reason: PROBE_REASONS.has(outcome?.reason) ? outcome.reason : PROBE_REASON.NETWORK,
+              check: PROBE_CHECKS.has(outcome?.check) ? outcome.check : PROBE_CHECK.NONE,
               httpStatus: Number.isInteger(outcome?.httpStatus) ? outcome.httpStatus : void 0,
+              detail: detail ? detail.slice(0, 200) : void 0,
               latencyMs: Number.isInteger(outcome?.latencyMs) ? Math.min(Math.max(outcome.latencyMs, 0), 6e5) : 0,
               discoveredCount: probeCount(outcome?.discoveredCount),
               addedCount: probeCount(outcome?.addedCount),

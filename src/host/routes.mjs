@@ -5,7 +5,7 @@
 import { discoverSources, scanSource, defaultSourcePath, SCAN_REASON } from '../../lib/core/scan.js'
 import { classifyProfiles } from '../../lib/core/mapper.js'
 import { importProfiles as runImport } from '../../lib/core/importer.js'
-import { probeModels, probeConnection, PROBE_REASON, PROBE_REASONS } from '../../lib/core/probe.js'
+import { probeModels, probeConnection, PROBE_REASON, PROBE_REASONS, PROBE_CHECK, PROBE_CHECKS } from '../../lib/core/probe.js'
 import { redactText, BLOCKED, BLOCKED_CODES } from '../../lib/core/safety.js'
 
 export const API_BASE = '/api/dsh-ccswitch'
@@ -290,12 +290,18 @@ export function makeRoutes(deps = {}) {
           knownSecrets = targets.map((profile) => profile.apiKey).filter((key) => typeof key === 'string' && key.length > 0)
           const results = await Promise.all(targets.map(async (profile) => {
             const outcome = await probe(profile)
+            // The upstream's own error text is the most useful part of a
+            // failure ("Invalid token" beats a bare 401), but relays sometimes
+            // echo the key, so it goes through the same redaction as `message`.
+            const detail = redactText(outcome?.detail, knownSecrets)
             return {
               profileId: publicText(profile.profileId),
               profileName: publicText(profile.profileName),
               ok: outcome?.ok === true,
               reason: PROBE_REASONS.has(outcome?.reason) ? outcome.reason : PROBE_REASON.NETWORK,
+              check: PROBE_CHECKS.has(outcome?.check) ? outcome.check : PROBE_CHECK.NONE,
               httpStatus: Number.isInteger(outcome?.httpStatus) ? outcome.httpStatus : undefined,
+              detail: detail ? detail.slice(0, 200) : undefined,
               latencyMs: Number.isInteger(outcome?.latencyMs) ? Math.min(Math.max(outcome.latencyMs, 0), 600000) : 0,
               discoveredCount: probeCount(outcome?.discoveredCount),
               addedCount: probeCount(outcome?.addedCount),

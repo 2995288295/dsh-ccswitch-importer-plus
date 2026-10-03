@@ -76,7 +76,7 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host 路由只接受 loopback、same-origin 请求；API key 不进入浏览器、日志、摘要或错误文本。
 - 读取需要 Node.js 22.19 或更高版本，以支持只读 SQLite API。
-- 插件只处理 CCSwitch 的自定义 Codex / Claude / Claude Desktop / OpenCode provider 和当前数据库字段；「测试连接」只请求 `{baseURL}/models` 以核对凭据与地址是否可用，不做真实推理探测，也不写入任何设置。
+- 插件只处理 CCSwitch 的自定义 Codex / Claude / Claude Desktop / OpenCode provider 和当前数据库字段；「测试连接」先请求 `{baseURL}/models`（免费、不发推理请求），只有当上游不提供模型列表（`401`/`403`/`404`/`405`/`501`）时，才对该 provider 真正使用的端点补发一次 **1 token** 的最小请求，用于区分「中转站不暴露 `/models`」与「凭据确实无效」。它不写入任何设置，失败时会把上游自己的错误原文（脱敏后）一并显示。
 - 未知模型和不合法等级默认关闭，避免向网关发送未确认的 reasoning 参数。
 
 ## 与上游的差异
@@ -114,6 +114,13 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 - 探测在结构上就是只读的：这条路由不碰 settings，也不执行导入。有一条测试断言导入路径被调用 **0** 次。
 - 按钮放在徽章旁边，而不是塞进行 `<label>` 里，所以点击按钮不再连带切换复选框；没有凭据或 base URL 的行不显示按钮；单次请求最多探测 50 行。
 - 结果在两端都做归一化（未知原因一律按网络失败处理，计数与耗时都做夹取），重扫后消失的行会连带丢弃它的探测结果；服务端继续按密钥值脱敏，错误响应里不会回显 key。
+
+**`0.2.0-rc.5` 探测更可信**
+
+- 失败信息不再只有一个状态码：探测会把上游自己的错误原文取出来（脱敏、压成一行、截断 200 字符）附在行内，例如 `失败 · HTTP 401 · Invalid token (request id: …)`，而不是让用户对着一个 `HTTP 401` 猜。
+- `/models` 被中转站挡住时不再是假失败：当它是 `401`/`403`/`404`/`405`/`501` 时，会按该 provider 的协议（`openai-completions` → `/chat/completions`、`openai-responses` → `/responses`、`anthropic-messages` → `/messages`）补发一次带上 `max_tokens: 1` 的最小真实请求。只要这次成功，行内显示 `连通 · 最小请求 · Nms`，明确说明是通过哪种方式验证的。
+- 这次补发只发生在免费检查答不上来的时候，且上游不可达（超时/网络错误）或该 provider 没有已知模型 ID 时不会发第二次请求；导入路径的模型加宽仍然只走 `/models`，因此不会因为探测而多花钱。
+- 新增宿主半未加载的识别：如果探测请求本身返回 `401`/`404`（宿主还没加载新路由，页面却已经是新的客户端 bundle），行内会提示「宿主未加载该接口，重启 DSH 后重试」，而不是把它误读成上游故障。
 
 上游版权与许可证原样保留在 `LICENSE`；改动声明见 `NOTICE`，且每个被改动的源文件头部都带改动提示。
 

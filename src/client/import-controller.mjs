@@ -11,6 +11,12 @@ function importable(profile) {
 }
 
 const PROBE_REASONS = new Set(['ok', 'empty', 'http-error', 'timeout', 'network', 'no-credentials'])
+const PROBE_CHECKS = new Set(['models', 'minimal', 'none'])
+
+/** A 401/404 out of the probe *route* means the Host half is older than the UI. */
+function isStaleHost(message) {
+  return /HTTP\s*40[14]\b/.test(message) || /unauthorized/i.test(message)
+}
 
 /** Counts and durations are clamped, not trusted: the Host could be anything. */
 function probeNumber(value) {
@@ -22,9 +28,11 @@ function sanitizeProbe(result) {
   return {
     ok: result?.ok === true,
     reason: PROBE_REASONS.has(result?.reason) ? result.reason : 'network',
+    check: PROBE_CHECKS.has(result?.check) ? result.check : 'none',
     httpStatus: Number.isInteger(result?.httpStatus) && result.httpStatus > 0 && result.httpStatus < 1000
       ? result.httpStatus
       : undefined,
+    detail: typeof result?.detail === 'string' ? result.detail.slice(0, 200) : undefined,
     latencyMs: probeNumber(result?.latencyMs),
     discoveredCount: probeNumber(result?.discoveredCount),
     addedCount: probeNumber(result?.addedCount),
@@ -125,13 +133,14 @@ export function createCCSwitchImportController({
         const results = Array.isArray(body.results) ? body.results : []
         const result = results.find((item) => item.profileId === profileId) ?? results[0]
         if (!result) {
-          setProbe({ phase: 'error', message: '' })
+          setProbe({ phase: 'error', message: '', staleHost: false })
           return undefined
         }
         setProbe({ phase: 'done', ...sanitizeProbe(result) })
         return result
       } catch (error) {
-        setProbe({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
+        const message = error instanceof Error ? error.message : String(error)
+        setProbe({ phase: 'error', message, staleHost: isStaleHost(message) })
         return undefined
       }
     },

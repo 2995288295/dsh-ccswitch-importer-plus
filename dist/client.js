@@ -231,6 +231,10 @@ window.__ModuleLoader__.load({
 		  return profile.status !== "blocked" && profile.credential === "found";
 		}
 		var PROBE_REASONS = /* @__PURE__ */ new Set(["ok", "empty", "http-error", "timeout", "network", "no-credentials"]);
+		var PROBE_CHECKS = /* @__PURE__ */ new Set(["models", "minimal", "none"]);
+		function isStaleHost(message) {
+		  return /HTTP\s*40[14]\b/.test(message) || /unauthorized/i.test(message);
+		}
 		function probeNumber(value) {
 		  return Number.isInteger(value) && value >= 0 ? Math.min(value, 6e5) : 0;
 		}
@@ -238,7 +242,9 @@ window.__ModuleLoader__.load({
 		  return {
 		    ok: result?.ok === true,
 		    reason: PROBE_REASONS.has(result?.reason) ? result.reason : "network",
+		    check: PROBE_CHECKS.has(result?.check) ? result.check : "none",
 		    httpStatus: Number.isInteger(result?.httpStatus) && result.httpStatus > 0 && result.httpStatus < 1e3 ? result.httpStatus : void 0,
+		    detail: typeof result?.detail === "string" ? result.detail.slice(0, 200) : void 0,
 		    latencyMs: probeNumber(result?.latencyMs),
 		    discoveredCount: probeNumber(result?.discoveredCount),
 		    addedCount: probeNumber(result?.addedCount),
@@ -337,13 +343,14 @@ window.__ModuleLoader__.load({
 		        const results = Array.isArray(body.results) ? body.results : [];
 		        const result = results.find((item) => item.profileId === profileId) ?? results[0];
 		        if (!result) {
-		          setProbe({ phase: "error", message: "" });
+		          setProbe({ phase: "error", message: "", staleHost: false });
 		          return void 0;
 		        }
 		        setProbe({ phase: "done", ...sanitizeProbe(result) });
 		        return result;
 		      } catch (error) {
-		        setProbe({ phase: "error", message: error instanceof Error ? error.message : String(error) });
+		        const message = error instanceof Error ? error.message : String(error);
+		        setProbe({ phase: "error", message, staleHost: isStaleHost(message) });
 		        return void 0;
 		      }
 		    },
@@ -455,6 +462,8 @@ window.__ModuleLoader__.load({
 		    "importer.probe.testAria": "\u6D4B\u8BD5 {name} \u7684\u8FDE\u63A5",
 		    "importer.probe.testing": "\u6D4B\u8BD5\u4E2D\u2026",
 		    "importer.probe.ok": "\u8FDE\u901A \xB7 {count} \u4E2A\u6A21\u578B \xB7 {ms}ms",
+		    "importer.probe.ok-minimal": "\u8FDE\u901A \xB7 \u6700\u5C0F\u8BF7\u6C42 \xB7 {ms}ms",
+		    "importer.probe.hostStale": "\u5BBF\u4E3B\u672A\u52A0\u8F7D\u8BE5\u63A5\u53E3\uFF0C\u91CD\u542F DSH \u540E\u91CD\u8BD5",
 		    "importer.probe.empty": "\u8FDE\u901A \xB7 \u4E0A\u6E38\u6CA1\u8FD4\u56DE\u6A21\u578B",
 		    "importer.probe.http-error": "\u5931\u8D25 \xB7 HTTP {status}",
 		    "importer.probe.no-credentials": "\u65E0\u6CD5\u6D4B\u8BD5\uFF1A\u7F3A\u5C11\u51ED\u636E\u6216 base URL",
@@ -543,6 +552,8 @@ window.__ModuleLoader__.load({
 		    "importer.probe.testAria": "Test the connection for {name}",
 		    "importer.probe.testing": "Testing\u2026",
 		    "importer.probe.ok": "connected \xB7 {count} models \xB7 {ms}ms",
+		    "importer.probe.ok-minimal": "connected \xB7 minimal request \xB7 {ms}ms",
+		    "importer.probe.hostStale": "the host has not loaded this endpoint \u2014 restart DSH",
 		    "importer.probe.empty": "connected \xB7 upstream returned no models",
 		    "importer.probe.http-error": "failed \xB7 HTTP {status}",
 		    "importer.probe.no-credentials": "cannot test: missing credential or base URL",
@@ -1127,6 +1138,7 @@ window.__ModuleLoader__.load({
 		}
 		var PROBE_FALLBACK = {
 		  ok: "\u8FDE\u901A \xB7 {count} \u4E2A\u6A21\u578B \xB7 {ms}ms",
+		  "ok-minimal": "\u8FDE\u901A \xB7 \u6700\u5C0F\u8BF7\u6C42 \xB7 {ms}ms",
 		  empty: "\u8FDE\u901A \xB7 \u4E0A\u6E38\u6CA1\u8FD4\u56DE\u6A21\u578B",
 		  "http-error": "\u5931\u8D25 \xB7 HTTP {status}",
 		  "no-credentials": "\u65E0\u6CD5\u6D4B\u8BD5\uFF1A\u7F3A\u5C11\u51ED\u636E\u6216 base URL",
@@ -1135,14 +1147,16 @@ window.__ModuleLoader__.load({
 		};
 		function probeLabel(probe, tr) {
 		  if (probe?.phase === "error") {
-		    return tr("importer.probe.requestFailed", "\u5931\u8D25 \xB7 {message}", { message: probe.message ?? "" });
+		    const base2 = tr("importer.probe.requestFailed", "\u5931\u8D25 \xB7 {message}", { message: probe.message ?? "" });
+		    return probe.staleHost ? `${base2} \xB7 ${tr("importer.probe.hostStale", "\u5BBF\u4E3B\u672A\u52A0\u8F7D\u8BE5\u63A5\u53E3\uFF0C\u91CD\u542F DSH \u540E\u91CD\u8BD5")}` : base2;
 		  }
-		  const reason = typeof probe?.reason === "string" && PROBE_FALLBACK[probe.reason] ? probe.reason : "network";
-		  return tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
+		  const reason = probe?.check === "minimal" && probe?.ok === true ? "ok-minimal" : typeof probe?.reason === "string" && PROBE_FALLBACK[probe.reason] ? probe.reason : "network";
+		  const base = tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
 		    count: probe?.modelCount ?? 0,
 		    ms: probe?.latencyMs ?? 0,
 		    status: probe?.httpStatus ?? 0
 		  });
+		  return typeof probe?.detail === "string" && probe.detail.length > 0 ? `${base} \xB7 ${probe.detail}` : base;
 		}
 		function probeKind(probe) {
 		  return probe?.phase !== "error" && probe?.ok === true ? "ok" : "error";

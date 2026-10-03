@@ -8,7 +8,7 @@
 // `controller.probeOne` (client state) — so each is covered where it lives.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { probeConnection, probeModels, PROBE_REASON, PROBE_REASONS } from '../lib/core/probe.js'
+import { probeConnection, probeModels, PROBE_REASON, PROBE_REASONS, PROBE_CHECK } from '../lib/core/probe.js'
 import { makeRoutes } from '../src/host/routes.mjs'
 import { createCCSwitchImportController } from '../src/client/import-controller.mjs'
 import { MESSAGES } from '../src/client/messages.mjs'
@@ -182,7 +182,19 @@ test('the probe route is POST-only, Origin-fenced and never imports anything', a
   const route = probeRoute({
     scan: async () => [profileRow()],
     importProfiles: async () => { imports += 1; return [] },
-    probe: async () => ({ ok: true, reason: 'ok', httpStatus: 200, latencyMs: 12, discoveredCount: 1, addedCount: 0, modelCount: 1, message: '模型探测成功：新增 0 个模型（共 1 个）' }),
+    probe: async () => ({
+      ok: true,
+      reason: 'ok',
+      check: 'minimal',
+      httpStatus: 200,
+      // The upstream's own words, echoing the key: the route must redact it.
+      detail: `模型列表不可用：${SECRET}`,
+      latencyMs: 12,
+      discoveredCount: 1,
+      addedCount: 0,
+      modelCount: 1,
+      message: '模型探测成功：新增 0 个模型（共 1 个）',
+    }),
   })
 
   const noOrigin = await postProbe(route, JSON.stringify({ profileIds: ['p1'] }), { omitOrigin: true })
@@ -200,7 +212,11 @@ test('the probe route is POST-only, Origin-fenced and never imports anything', a
     profileName: 'P1',
     ok: true,
     reason: 'ok',
+    check: 'minimal',
     httpStatus: 200,
+    // The actionability of a failure comes from the upstream's own message,
+    // so it is forwarded verbatim — minus anything that looks like a key.
+    detail: '模型列表不可用：[redacted]',
     latencyMs: 12,
     discoveredCount: 1,
     addedCount: 0,
@@ -405,4 +421,169 @@ test('re-scanning drops verdicts for rows that disappeared', async () => {
   await controller.scan()
   assert.deepEqual(controller.getSnapshot().probes, {})
   assert.ok(!('p1' in controller.getSnapshot().probes))
+})
+
+// A healthy `/models` proves the key for free; when a relay refuses to list
+// models, one 1-token request against the endpoint the profile really uses is
+// the only honest way left to answer "does this connection work?".
+
+test('a rejected /models falls back to one minimal request on the real endpoint', async () => {
+  const calls = []
+  const outcome = await probeConnection(profileRow({ api: 'openai-responses' }), {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      if (url.endsWith('/models')) return { ok: false, status: 404, async text() { return 'no model list here' } }
+      return { ok: true, status: 200, async text() { return '' } }
+    },
+  })
+
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.reason, PROBE_REASON.OK)
+  assert.equal(outcome.check, PROBE_CHECK.MINIMAL)
+  assert.deepEqual(calls.map((call) => call.url), [
+    'https://upstream.test/v1/models',
+    'https://upstream.test/v1/responses',
+  ])
+  assert.equal(calls[1].init.method, 'POST')
+  assert.equal(calls[1].init.headers['content-type'], 'application/json')
+  const body = JSON.parse(calls[1].init.body)
+  assert.equal(body.model, 'seed-model')
+  assert.equal(body.max_output_tokens, 1)
+  // The listing failure is still reported — it is why the fallback ran.
+  assert.equal(outcome.detail, 'no model list here')
+  // No model list was read, so nothing new can be claimed.
+  assert.equal(outcome.discoveredCount, 0)
+  assert.equal(outcome.addedCount, 0)
+})
+
+test('each wire protocol falls back to its own endpoint and token cap', async () => {
+  const cases = [
+    ['openai-completions', '/chat/completions', 'max_tokens'],
+    ['anthropic-messages', '/messages', 'max_tokens'],
+    ['openai-responses', '/responses', 'max_output_tokens'],
+  ]
+  for (const [api, path, field] of cases) {
+    const calls = []
+    await probeConnection(profileRow({ api }), {
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init })
+        return { ok: false, status: 405, async text() { return '' } }
+      },
+    })
+    assert.equal(calls.length, 2, api)
+    assert.equal(calls[1].url, `https://upstream.test/v1${path}`, api)
+    const body = JSON.parse(calls[1].init.body)
+    assert.equal(body.model, 'seed-model', api)
+    assert.equal(body[field], 1, api)
+  }
+})
+
+test('the fallback is skipped when the upstream is unreachable or has no model id', async () => {
+  const offline = []
+  await probeConnection(profileRow(), {
+    fetchImpl: async (url) => { offline.push(url); throw new Error('connect ECONNREFUSED') },
+  })
+  // Retrying a dead host would only make the user wait twice as long.
+  assert.deepEqual(offline, ['https://upstream.test/v1/models'])
+
+  const noModel = []
+  const outcome = await probeConnection(profileRow({ models: [] }), {
+    fetchImpl: async (url) => { noModel.push(url); return { ok: false, status: 404, async text() { return '' } } },
+  })
+  assert.deepEqual(noModel, ['https://upstream.test/v1/models'])
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.check, PROBE_CHECK.NONE)
+  assert.equal(outcome.httpStatus, 404)
+})
+
+test('the upstream reason survives the banner some relays print before JSON', async () => {
+  // The exact shape this Host met on api.justwoker.icu.
+  const body = '<upstream>{"error":{"code":"","message":"Invalid token (request id: 20261003095148)"}}'
+  const calls = []
+  const outcome = await probeConnection(profileRow(), {
+    fetchImpl: async (url) => {
+      calls.push(url)
+      return { ok: false, status: 401, async text() { return body } }
+    },
+  })
+  assert.equal(calls.length, 2, 'a 401 on /models alone is not conclusive')
+  assert.equal(outcome.ok, false)
+  assert.equal(outcome.check, PROBE_CHECK.NONE)
+  assert.equal(outcome.httpStatus, 401)
+  assert.equal(outcome.detail, 'Invalid token (request id: 20261003095148)')
+  assert.match(outcome.message, /HTTP 401/)
+})
+
+test('the upstream error body is reduced to one short, plain line', async () => {
+  const cases = [
+    ['{"error":{"message":"bad key"}}', 'bad key'],
+    ['{"error":"plain string"}', 'plain string'],
+    ['{"message":"quota exceeded"}', 'quota exceeded'],
+    ['unauthorized', 'unauthorized'],
+    ['not json at all', 'not json at all'],
+  ]
+  for (const [body, expected] of cases) {
+    const outcome = await probeConnection(profileRow(), {
+      fetchImpl: async () => ({ ok: false, status: 403, async text() { return body } }),
+    })
+    assert.equal(outcome.detail, expected, body)
+  }
+
+  const long = await probeConnection(profileRow(), {
+    fetchImpl: async () => ({ ok: false, status: 403, async text() { return 'x'.repeat(500) } }),
+  })
+  assert.equal(long.detail.length, 200, 'a chatty upstream must not flood the UI')
+})
+
+test('the import path never spends a minimal request', async () => {
+  const calls = []
+  const warned = await probeModels(profileRow(), {
+    fetchImpl: async (url) => { calls.push(url); return { ok: false, status: 404, async text() { return 'no list' } } },
+  })
+  // Widening the model list needs a list; the fallback cannot provide one.
+  assert.deepEqual(calls, ['https://upstream.test/v1/models'])
+  assert.match(warned.warnings[0], /HTTP 404/)
+})
+
+test('the controller keeps the upstream detail and flags a Host that is behind', async () => {
+  const requests = []
+  const controller = scanningController({
+    requests,
+    scanProfiles: () => [{ profileId: 'p1', profileName: 'P1', status: 'new', credential: 'found', baseURL: 'https://a.test/v1' }],
+    onProbe: async () => ({
+      ok: true,
+      async json() {
+        return { results: [{ profileId: 'p1', ok: false, reason: 'http-error', check: 'none', httpStatus: 401, detail: 'Invalid token', latencyMs: 33, modelCount: 1, message: '模型探测失败（HTTP 401），保留源配置的模型列表' }] }
+      },
+    }),
+  })
+  await controller.scan()
+  await controller.probeOne('p1')
+  const verdict = controller.getSnapshot().probes.p1
+  assert.equal(verdict.phase, 'done')
+  assert.equal(verdict.check, 'none')
+  assert.equal(verdict.detail, 'Invalid token')
+  assert.equal(verdict.staleHost, undefined, 'a provider 401 is not a stale Host')
+
+  // The Host half answering 401/404 means it never registered the route: the
+  // page is running a newer client bundle than the running Host.
+  for (const [status, expected] of [[401, true], [404, true], [500, false]]) {
+    const stale = scanningController({
+      requests: [],
+      scanProfiles: () => [{ profileId: 'p1', profileName: 'P1', status: 'new', credential: 'found', baseURL: 'https://a.test/v1' }],
+      onProbe: async () => ({ ok: false, status, async json() { throw new Error('not json') } }),
+    })
+    await stale.scan()
+    await stale.probeOne('p1')
+    const failed = stale.getSnapshot().probes.p1
+    assert.equal(failed.phase, 'error', String(status))
+    assert.equal(failed.message, `HTTP ${status}`, String(status))
+    if (expected) {
+      assert.equal(failed.staleHost, true, String(status))
+    } else {
+      assert.notEqual(failed.staleHost, true, String(status))
+    }
+    // A failed probe never becomes a failed panel.
+    assert.equal(stale.getSnapshot().phase, 'ready')
+  }
 })

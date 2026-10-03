@@ -101,6 +101,7 @@ function resultDetail(result, tr) {
  */
 const PROBE_FALLBACK = {
   ok: '连通 · {count} 个模型 · {ms}ms',
+  'ok-minimal': '连通 · 最小请求 · {ms}ms',
   empty: '连通 · 上游没返回模型',
   'http-error': '失败 · HTTP {status}',
   'no-credentials': '无法测试：缺少凭据或 base URL',
@@ -110,14 +111,24 @@ const PROBE_FALLBACK = {
 
 function probeLabel(probe, tr) {
   if (probe?.phase === 'error') {
-    return tr('importer.probe.requestFailed', '失败 · {message}', { message: probe.message ?? '' });
+    const base = tr('importer.probe.requestFailed', '失败 · {message}', { message: probe.message ?? '' });
+    // A 4xx from the probe route itself means the Host half is older than this
+    // bundle and does not know the endpoint yet.
+    return probe.staleHost
+      ? `${base} · ${tr('importer.probe.hostStale', '宿主未加载该接口，重启 DSH 后重试')}`
+      : base;
   }
-  const reason = typeof probe?.reason === 'string' && PROBE_FALLBACK[probe.reason] ? probe.reason : 'network';
-  return tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
+  // A connection proved by the 1-token fallback has no model list to count.
+  const reason = probe?.check === 'minimal' && probe?.ok === true
+    ? 'ok-minimal'
+    : typeof probe?.reason === 'string' && PROBE_FALLBACK[probe.reason] ? probe.reason : 'network';
+  const base = tr(`importer.probe.${reason}`, PROBE_FALLBACK[reason], {
     count: probe?.modelCount ?? 0,
     ms: probe?.latencyMs ?? 0,
     status: probe?.httpStatus ?? 0,
   });
+  // The upstream's own words are the actionable part of a failure.
+  return typeof probe?.detail === 'string' && probe.detail.length > 0 ? `${base} · ${probe.detail}` : base;
 }
 
 function probeKind(probe) {

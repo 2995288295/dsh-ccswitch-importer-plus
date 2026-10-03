@@ -76,7 +76,7 @@ DSH_CATALOG_ORIGIN=https://catalog.example.com npm run build:catalog
 
 - Host routes accept only loopback, same-origin requests; API keys never enter the browser, logs, summaries, or error text.
 - Reading requires Node.js 22.19 or newer for the read-only SQLite API.
-- The plugin handles custom CCSwitch Codex / Claude / Claude Desktop / OpenCode providers and the fields currently present in the database. "Test connection" only calls `{baseURL}/models` to check that the key and the address work; it never exercises real inference, and it writes nothing.
+- The plugin handles custom CCSwitch Codex / Claude / Claude Desktop / OpenCode providers and the fields currently present in the database. "Test connection" first calls `{baseURL}/models` (free, no inference); only when the upstream does not expose a model list (`401`/`403`/`404`/`405`/`501`) does it send one **1-token** request to the endpoint the provider really uses, to tell "this relay hides `/models`" apart from "this key is genuinely invalid". It writes nothing, and on failure it shows the upstream's own error text (redacted).
 - Unknown models and invalid levels default to disabled reasoning to avoid sending unconfirmed parameters to a gateway.
 
 ## Differences from upstream
@@ -114,6 +114,13 @@ Relative to [wtiaw/dsh-ccswitch-importer](https://github.com/wtiaw/dsh-ccswitch-
 - Probing is read-only by construction: the route never touches settings, and an import is not part of the request. A test asserts that the import path is called zero times.
 - The button sits next to the badge rather than inside the row `<label>`, so clicking it no longer toggles the checkbox. Rows without a credential or a base URL show no button, and a single request probes at most 50 rows.
 - Verdicts are sanitised on both sides (unknown reasons degrade to a network failure, counts and durations are clamped) and are dropped when the row they describe disappears from a re-scan. The host keeps redacting by secret value, so an error body never echoes the key.
+
+**`0.2.0-rc.5` more trustworthy probing**
+
+- A failure no longer reports a bare status code: the probe lifts the upstream's own error text out of the response body (redacted, flattened to one line, capped at 200 characters) and shows it on the row — `failed · HTTP 401 · Invalid token (request id: …)` instead of leaving the user to guess.
+- A relay that blocks `/models` is no longer a false failure: when it answers `401`/`403`/`404`/`405`/`501`, the probe sends one minimal real request shaped for that provider's protocol (`openai-completions` → `/chat/completions`, `openai-responses` → `/responses`, `anthropic-messages` → `/messages`) with `max_tokens: 1`. If that succeeds the row reads `connected · minimal request · Nms`, naming the check that passed.
+- The extra request only happens when the free check was inconclusive: an unreachable upstream (timeout/network) or a provider with no known model id never triggers a second call, and the import path still widens the model list from `/models` alone — so probing never quietly costs more.
+- A Host that is behind its bundle is now recognised: if the probe request itself answers `401`/`404` (the running Host has no such route while the page already runs the new client), the row says "the host has not loaded this endpoint — restart DSH" instead of misreporting it as an upstream failure.
 
 The upstream copyright and license are kept unmodified in `LICENSE`; changed files carry a notice header and `NOTICE` records the modifications.
 
